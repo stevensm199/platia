@@ -1,0 +1,32 @@
+{
+  "name": "nummus",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node --env-file=.env ./node_modules/tsx/dist/cli.mjs --tsconfig tsconfig.runtime.json src/main.ts",
+    "start": "node --env-file=.env ./node_modules/tsx/dist/cli.mjs --tsconfig tsconfig.runtime.json src/main.ts",
+    "test": "node --env-file=.env ./node_modules/vitest/vitest.mjs run",
+    "typecheck": "tsc --noEmit",
+    "db:migrate": "prisma migrate deploy",
+    "db:seed": "prisma db seed",
+    "postinstall": "prisma generate && node scripts/link-prisma-client.mjs"
+  },
+  "prisma": {
+    "seed": "tsx --tsconfig tsconfig.runtime.json prisma/seed.ts"
+  },
+  "dependencies": {
+    "@prisma/client": "^6.19.3",
+    "express": "^4.22.3",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.6",
+    "@types/node": "^26.6.6",
+    "@types/supertest": "^7.2.1",
+    "prisma": "^6.19.3",
+    "supertest": "^7.3.2",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.3",
+    "vitest": "^5.1.0"
+  }
+}

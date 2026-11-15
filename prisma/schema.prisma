@@ -1,0 +1,64 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+enum PaymentMethodType {
+  savings
+  credit
+  cash
+}
+
+enum TransactionType {
+  expense
+  income
+  credit_card_payment
+}
+
+enum Currency {
+  COP
+}
+
+model Category {
+  id           Int           @id @default(autoincrement())
+  name         String
+  description  String?
+  transactions Transaction[]
+
+  @@map("categories")
+}
+
+model PaymentMethod {
+  id                   Int               @id @default(autoincrement())
+  name                 String
+  type                 PaymentMethodType @default(cash)
+  currentBalance       Int               @default(0) @map("current_balance")
+  currentLimit         Int               @default(0) @map("current_limit")
+  currentDebt          Int               @default(0) @map("current_debt")
+  transactions         Transaction[]     @relation("TransactionSource")
+  targetedTransactions Transaction[]     @relation("TransactionTarget")
+
+  @@map("payment_methods")
+}
+
+model Transaction {
+  id                    Int             @id @default(autoincrement())
+  date                  DateTime        @default(now()) @db.Timestamptz(6)
+  description           String          @db.VarChar(150)
+  amount                Int
+  type                  TransactionType
+  currency              Currency        @default(COP)
+  paymentMethod         PaymentMethod   @relation("TransactionSource", fields: [paymentMethodId], references: [id])
+  paymentMethodId       Int             @default(1) @map("payment_method_id")
+  targetPaymentMethod   PaymentMethod?  @relation("TransactionTarget", fields: [targetPaymentMethodId], references: [id], onDelete: Restrict)
+  targetPaymentMethodId Int?            @map("target_payment_method_id")
+  category              Category        @relation(fields: [categoryId], references: [id])
+  categoryId            Int             @default(1) @map("category_id")
+
+  @@map("transactions")
+}

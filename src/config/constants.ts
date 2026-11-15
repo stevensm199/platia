@@ -1,0 +1,11 @@
+export const DEFAULT_CATEGORY_ID = 1;
+export const DEFAULT_INCOME_CATEGORY_ID = 2;
+export const DEFAULT_TRANSFER_CATEGORY_ID = 3;
+export const DEFAULT_PAYMENT_METHOD_ID = 1;
+export const DESCRIPTION_MAX_LENGTH = 150;
+export const DEFAULT_PAGE = 1;
+export const DEFAULT_LIMIT = 20;
+export const MAX_LIMIT = 100;
+export const MAX_AMOUNT = 2_147_483_647;
+export const API_PREFIX = "/api/v1";
+export const DEFAULT_CURRENCY = "COP";
