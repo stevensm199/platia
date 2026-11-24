@@ -20,7 +20,10 @@ function typescriptFiles(directory: string): string[] {
 
 describe("architecture boundaries", () => {
   it("keeps the domain free of Express, Prisma, and config", () => {
-    const domainFiles = typescriptFiles("src/modules/finance-app/domain");
+    const domainFiles = [
+      ...typescriptFiles("src/modules/finance-app/domain"),
+      ...typescriptFiles("src/modules/channels/telegram/domain"),
+    ];
     expect(domainFiles.length).toBeGreaterThan(0);
     for (const file of domainFiles) {
       const source = readFileSync(file, "utf8");
@@ -28,6 +31,15 @@ describe("architecture boundaries", () => {
       expect(source, file).not.toContain("@prisma/client");
       expect(source, file).not.toContain("config/");
     }
+  });
+
+  it("keeps channels from importing finance-app", () => {
+    const channelFiles = typescriptFiles("src/modules/channels");
+    expect(channelFiles.length).toBeGreaterThan(0);
+    const offenders = channelFiles.filter((file) =>
+      readFileSync(file, "utf8").includes("finance-app"),
+    );
+    expect(offenders).toEqual([]);
   });
 
   it("reads the environment only from src/config/env.ts", () => {

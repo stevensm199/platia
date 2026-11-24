@@ -19,12 +19,14 @@ export type NewPaymentMethod = {
 export type PaymentMethodRecord = NewPaymentMethod & { id: number };
 
 export interface PaymentMethodRepository {
-  insert(paymentMethod: NewPaymentMethod): Promise<PaymentMethodRecord>;
-  findMany(): Promise<PaymentMethodRecord[]>;
-  findById(id: number): Promise<PaymentMethodRecord | null>;
-  lockById(id: number): Promise<PaymentMethodRecord>;
-  update(paymentMethod: PaymentMethodRecord): Promise<PaymentMethodRecord>;
-  delete(id: number): Promise<void>;
-  lockMany(ids: number[]): Promise<Map<number, LockedPaymentMethod>>;
-  saveCounters(paymentMethod: LockedPaymentMethod): Promise<void>;
+  insert(userId: number, paymentMethod: NewPaymentMethod): Promise<PaymentMethodRecord>;
+  findMany(userId: number): Promise<PaymentMethodRecord[]>;
+  findById(userId: number, id: number): Promise<PaymentMethodRecord | null>;
+  lockById(userId: number, id: number): Promise<PaymentMethodRecord>;
+  update(userId: number, paymentMethod: PaymentMethodRecord): Promise<PaymentMethodRecord>;
+  delete(userId: number, id: number): Promise<void>;
+  deleteMany(userId: number): Promise<void>;
+  lockMany(userId: number, ids: number[]): Promise<Map<number, LockedPaymentMethod>>;
+  saveCounters(userId: number, paymentMethod: LockedPaymentMethod): Promise<void>;
+  sumCreditDebt(userId: number): Promise<number>;
 }

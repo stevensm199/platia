@@ -13,15 +13,15 @@ import {
 export class PrismaTransactionRepository implements TransactionRepository {
   constructor(private readonly tx: Prisma.TransactionClient) {}
 
-  async lockById(id: number): Promise<LockedTransaction> {
+  async lockById(userId: number, id: number): Promise<LockedTransaction> {
     const locked = await this.tx.$queryRaw<Array<{ id: number }>>`
-      SELECT id FROM transactions WHERE id = ${id} FOR UPDATE
+      SELECT id FROM transactions WHERE id = ${id} AND user_id = ${userId} FOR UPDATE
     `;
     if (locked.length === 0) {
       throw new NotFoundError(`Transaction ${id} does not exist`);
     }
 
-    const row = await this.tx.transaction.findUnique({ where: { id } });
+    const row = await this.tx.transaction.findFirst({ where: { id, userId } });
     if (!row) {
       throw new NotFoundError(`Transaction ${id} does not exist`);
     }
@@ -40,6 +40,7 @@ export class PrismaTransactionRepository implements TransactionRepository {
   async insert(input: StoredTransaction): Promise<StoredTransactionRow> {
     const created = await this.tx.transaction.create({
       data: {
+        userId: input.userId,
         amount: input.amount,
         description: input.description,
         type: input.type,
@@ -54,11 +55,12 @@ export class PrismaTransactionRepository implements TransactionRepository {
   }
 
   async update(
+    userId: number,
     id: number,
     changes: StoredTransactionChanges,
   ): Promise<StoredTransactionRow> {
     const updated = await this.tx.transaction.update({
-      where: { id },
+      where: { id, userId },
       data: {
         amount: changes.amount,
         description: changes.description,
@@ -73,8 +75,12 @@ export class PrismaTransactionRepository implements TransactionRepository {
     return storedRow(updated);
   }
 
-  async delete(id: number): Promise<void> {
-    await this.tx.transaction.delete({ where: { id } });
+  async delete(userId: number, id: number): Promise<void> {
+    await this.tx.transaction.delete({ where: { id, userId } });
+  }
+
+  async deleteMany(userId: number): Promise<void> {
+    await this.tx.transaction.deleteMany({ where: { userId } });
   }
 
 }

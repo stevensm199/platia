@@ -21,23 +21,24 @@ import { withLockedPaymentMethods } from "./with-locked-payment-methods";
 export class UpdateTransaction {
   constructor(private readonly unitOfWork: UnitOfWork) {}
 
-  execute(id: number, patch: UpdateTransactionPatch): Promise<TransactionView> {
+  execute(userId: number, id: number, patch: UpdateTransactionPatch): Promise<TransactionView> {
     return this.unitOfWork.run(({ categories, transactions, paymentMethods }) => {
-      return updateInsideTransaction(categories, transactions, paymentMethods, id, patch);
+      return updateInsideTransaction(userId, categories, transactions, paymentMethods, id, patch);
     });
   }
 }
 
 async function updateInsideTransaction(
+  userId: number,
   categories: CategoryRepository,
   transactions: TransactionRepository,
   paymentMethods: PaymentMethodRepository,
   id: number,
   patch: UpdateTransactionPatch,
 ): Promise<TransactionView> {
-  const original = await transactions.lockById(id);
+  const original = await transactions.lockById(userId, id);
   if (original.type === "credit_card_payment") {
-    return updateCardPayment(categories, transactions, paymentMethods, original, patch);
+    return updateCardPayment(userId, categories, transactions, paymentMethods, original, patch);
   }
 
   const merged = {
@@ -48,9 +49,10 @@ async function updateInsideTransaction(
     paymentMethodId: patch.paymentMethodId ?? original.paymentMethodId,
     date: patch.date ?? original.date,
   };
-  const category = await requireCategory(categories, merged.categoryId);
+  const category = await requireCategory(categories, userId, merged.categoryId);
   const { locked } = await withLockedPaymentMethods(
     paymentMethods,
+    userId,
     [original.paymentMethodId, merged.paymentMethodId],
     (methods) => {
       const originalMethod = methods.get(original.paymentMethodId)!;
@@ -62,7 +64,7 @@ async function updateInsideTransaction(
   );
   const nextMethod = locked.get(merged.paymentMethodId)!;
 
-  const updated = await transactions.update(id, {
+  const updated = await transactions.update(userId, id, {
     amount: merged.amount,
     type: merged.type,
     description: merged.description,
@@ -74,6 +76,7 @@ async function updateInsideTransaction(
 }
 
 async function updateCardPayment(
+  userId: number,
   categories: CategoryRepository,
   transactions: TransactionRepository,
   paymentMethods: PaymentMethodRepository,
@@ -88,9 +91,10 @@ async function updateCardPayment(
     categoryId: patch.categoryId ?? original.categoryId,
     date: patch.date ?? original.date,
   };
-  const category = await requireCategory(categories, merged.categoryId);
+  const category = await requireCategory(categories, userId, merged.categoryId);
   const { locked } = await withLockedPaymentMethods(
     paymentMethods,
+    userId,
     [original.paymentMethodId, original.targetPaymentMethodId],
     (methods) => {
       const source = methods.get(original.paymentMethodId)!;
@@ -104,7 +108,7 @@ async function updateCardPayment(
   const source = locked.get(original.paymentMethodId)!;
   const target = locked.get(original.targetPaymentMethodId)!;
 
-  const updated = await transactions.update(original.id, {
+  const updated = await transactions.update(userId, original.id, {
     amount: merged.amount,
     description: merged.description,
     categoryId: merged.categoryId,

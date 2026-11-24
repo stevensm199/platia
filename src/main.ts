@@ -4,7 +4,10 @@ import { createPrismaClient } from "./shared/database/prisma";
 
 const environment = loadEnv();
 const prisma = createPrismaClient();
-const app = createApp(prisma);
+const app = createApp(prisma, {
+  telegramBotToken: environment.telegramBotToken,
+  telegramWebhookSecret: environment.telegramWebhookSecret,
+});
 const server = app.listen(environment.port, () => {
   console.log(`Listening on ${environment.port}`);
 });

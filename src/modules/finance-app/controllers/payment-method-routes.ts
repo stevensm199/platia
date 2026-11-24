@@ -6,6 +6,8 @@ import { UpdatePaymentMethod } from "../application/update-payment-method";
 import { DeletePaymentMethod } from "../application/delete-payment-method";
 import { PaymentMethodController } from "./payment-method-controller";
 import { asyncRoute } from "./async-route";
+import { ResolveUser } from "../application/resolve-user";
+import { requireUser } from "./user-context";
 
 export function createPaymentMethodRouter(dependencies: {
   createPaymentMethod: CreatePaymentMethod;
@@ -13,6 +15,7 @@ export function createPaymentMethodRouter(dependencies: {
   getPaymentMethod: GetPaymentMethod;
   updatePaymentMethod: UpdatePaymentMethod;
   deletePaymentMethod: DeletePaymentMethod;
+  resolveUser: ResolveUser;
 }) {
   const controller = new PaymentMethodController(
     dependencies.createPaymentMethod,
@@ -22,6 +25,7 @@ export function createPaymentMethodRouter(dependencies: {
     dependencies.deletePaymentMethod,
   );
   const router = Router();
+  router.use("/payment-method", requireUser(dependencies.resolveUser));
 
   router.get("/payment-method", asyncRoute(controller.list));
   router.get("/payment-method/:id", asyncRoute(controller.get));

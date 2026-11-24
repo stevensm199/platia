@@ -56,19 +56,19 @@ export class PaymentMethodController {
   ) {}
 
   list = async (_request: Request, response: Response): Promise<void> => {
-    const paymentMethods = await this.listPaymentMethods.execute();
+    const paymentMethods = await this.listPaymentMethods.execute(_request.userId);
     response.status(200).json({ data: paymentMethods.map(paymentMethodJson) });
   };
 
   get = async (request: Request, response: Response): Promise<void> => {
     const id = paymentMethodIdSchema.parse(request.params.id);
-    const paymentMethod = await this.getPaymentMethod.execute(id);
+    const paymentMethod = await this.getPaymentMethod.execute(request.userId, id);
     response.status(200).json(paymentMethodJson(paymentMethod));
   };
 
   create = async (request: Request, response: Response): Promise<void> => {
     const body = createPaymentMethodSchema.parse(request.body);
-    const paymentMethod = await this.createPaymentMethod.execute({
+    const paymentMethod = await this.createPaymentMethod.execute(request.userId, {
       name: body.name,
       type: body.type,
       currentBalance: body.current_balance,
@@ -81,7 +81,7 @@ export class PaymentMethodController {
   update = async (request: Request, response: Response): Promise<void> => {
     const id = paymentMethodIdSchema.parse(request.params.id);
     const body = updatePaymentMethodSchema.parse(request.body ?? {});
-    const paymentMethod = await this.updatePaymentMethod.execute(id, {
+    const paymentMethod = await this.updatePaymentMethod.execute(request.userId, id, {
       name: body.name,
       currentBalance: body.current_balance,
       currentLimit: body.current_limit,
@@ -92,7 +92,7 @@ export class PaymentMethodController {
 
   remove = async (request: Request, response: Response): Promise<void> => {
     const id = paymentMethodIdSchema.parse(request.params.id);
-    await this.deletePaymentMethod.execute(id);
+    await this.deletePaymentMethod.execute(request.userId, id);
     response.status(204).send();
   };
 }

@@ -114,11 +114,15 @@ function buildWhere(filters: TransactionFilters): Prisma.TransactionWhereInput {
   if (filters.endDate) dateFilter.lte = filters.endDate;
 
   return {
+    userId: filters.userId,
     ...(filters.startDate || filters.endDate ? { date: dateFilter } : {}),
     ...(filters.type ? { type: filters.type } : {}),
     ...(filters.categoryId ? { categoryId: filters.categoryId } : {}),
     ...(filters.paymentMethodId
       ? { paymentMethodId: filters.paymentMethodId }
+      : {}),
+    ...(filters.description
+      ? { description: { contains: filters.description, mode: "insensitive" as const } }
       : {}),
   };
 }
@@ -135,7 +139,7 @@ function buildOrder(
 }
 
 function sqlWhere(filters: TransactionFilters): Prisma.Sql {
-  const parts: Prisma.Sql[] = [];
+  const parts: Prisma.Sql[] = [Prisma.sql`transactions.user_id = ${filters.userId}`];
   if (filters.startDate) {
     parts.push(Prisma.sql`transactions."date" >= ${filters.startDate}`);
   }
@@ -153,7 +157,10 @@ function sqlWhere(filters: TransactionFilters): Prisma.Sql {
       Prisma.sql`transactions.payment_method_id = ${filters.paymentMethodId}`,
     );
   }
-  if (parts.length === 0) return Prisma.empty;
+  if (filters.description) {
+    const escaped = filters.description.replace(/[\\%_]/g, (character) => `\\${character}`);
+    parts.push(Prisma.sql`transactions.description ILIKE ${`%${escaped}%`} ESCAPE '\\'`);
+  }
   return Prisma.sql`WHERE ${Prisma.join(parts, " AND ")}`;
 }
 

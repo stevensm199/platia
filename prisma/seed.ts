@@ -2,39 +2,61 @@ import { sep } from "node:path";
 import { PrismaClient } from "@prisma/client";
 import {
   DEFAULT_CATEGORY_ID,
+  DEFAULT_CATEGORY_NAME,
   DEFAULT_INCOME_CATEGORY_ID,
-  DEFAULT_TRANSFER_CATEGORY_ID,
   DEFAULT_PAYMENT_METHOD_ID,
+  DEFAULT_TRANSFER_CATEGORY_ID,
+  INCOME_CATEGORY_NAME,
+  TRANSFER_CATEGORY_NAME,
 } from "../src/config/constants";
 
 export async function seedCatalog(prisma: PrismaClient) {
+  const user = await prisma.user.upsert({
+    where: {
+      channel_externalId: { channel: "telegram", externalId: "714131512" },
+    },
+    update: {},
+    create: {
+      channel: "telegram",
+      externalId: "714131512",
+      email: "oscar.munoz.fajardo@gmail.com",
+      currency: "COP",
+      defaultCategoryId: DEFAULT_CATEGORY_ID,
+      incomeCategoryId: DEFAULT_INCOME_CATEGORY_ID,
+      transferCategoryId: DEFAULT_TRANSFER_CATEGORY_ID,
+      defaultPaymentMethodId: DEFAULT_PAYMENT_METHOD_ID,
+    },
+  });
+
   await prisma.category.upsert({
     where: { id: DEFAULT_CATEGORY_ID },
-    update: { name: "Otros" },
-    create: { id: DEFAULT_CATEGORY_ID, name: "Otros" },
+    update: {},
+    create: { id: DEFAULT_CATEGORY_ID, name: DEFAULT_CATEGORY_NAME, userId: user.id },
   });
 
   await prisma.category.upsert({
     where: { id: DEFAULT_INCOME_CATEGORY_ID },
-    update: { name: "Ingresos" },
-    create: { id: DEFAULT_INCOME_CATEGORY_ID, name: "Ingresos" },
+    update: {},
+    create: {
+      id: DEFAULT_INCOME_CATEGORY_ID,
+      name: INCOME_CATEGORY_NAME,
+      userId: user.id,
+    },
   });
 
   await prisma.category.upsert({
     where: { id: DEFAULT_TRANSFER_CATEGORY_ID },
-    update: { name: "Transferencias" },
-    create: { id: DEFAULT_TRANSFER_CATEGORY_ID, name: "Transferencias" },
+    update: {},
+    create: {
+      id: DEFAULT_TRANSFER_CATEGORY_ID,
+      name: TRANSFER_CATEGORY_NAME,
+      userId: user.id,
+    },
   });
 
   await prisma.paymentMethod.upsert({
     where: { id: DEFAULT_PAYMENT_METHOD_ID },
-    update: {
-      name: "Billetera",
-      type: "cash",
-      currentBalance: 0,
-      currentLimit: 0,
-      currentDebt: 0,
-    },
+    update: {},
     create: {
       id: DEFAULT_PAYMENT_METHOD_ID,
       name: "Billetera",
@@ -42,6 +64,7 @@ export async function seedCatalog(prisma: PrismaClient) {
       currentBalance: 0,
       currentLimit: 0,
       currentDebt: 0,
+      userId: user.id,
     },
   });
 
@@ -55,7 +78,8 @@ export async function seedCatalog(prisma: PrismaClient) {
 
 const entryPoint = process.argv[1] ?? "";
 const ranAsScript =
-  entryPoint.endsWith(`${sep}prisma${sep}seed.ts`) || entryPoint.endsWith(`${sep}prisma${sep}seed.js`);
+  entryPoint.endsWith(`${sep}prisma${sep}seed.ts`) ||
+  entryPoint.endsWith(`${sep}prisma${sep}seed.js`);
 
 if (ranAsScript) {
   const prisma = new PrismaClient();

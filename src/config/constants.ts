@@ -1,6 +1,9 @@
 export const DEFAULT_CATEGORY_ID = 1;
 export const DEFAULT_INCOME_CATEGORY_ID = 2;
 export const DEFAULT_TRANSFER_CATEGORY_ID = 3;
+export const DEFAULT_CATEGORY_NAME = "otros";
+export const INCOME_CATEGORY_NAME = "ingresos";
+export const TRANSFER_CATEGORY_NAME = "transferencias";
 export const DEFAULT_PAYMENT_METHOD_ID = 1;
 export const DESCRIPTION_MAX_LENGTH = 150;
 export const DEFAULT_PAGE = 1;

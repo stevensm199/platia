@@ -4,9 +4,10 @@ export type CategoryRecord = {
 };
 
 export interface CategoryRepository {
-  findMany(): Promise<CategoryRecord[]>;
-  findById(id: number): Promise<CategoryRecord | null>;
-  insert(name: string): Promise<CategoryRecord>;
-  update(id: number, name: string): Promise<CategoryRecord>;
-  delete(id: number): Promise<void>;
+  findMany(userId: number): Promise<CategoryRecord[]>;
+  findById(userId: number, id: number): Promise<CategoryRecord | null>;
+  insert(userId: number, name: string): Promise<CategoryRecord>;
+  update(userId: number, id: number, name: string): Promise<CategoryRecord>;
+  delete(userId: number, id: number): Promise<void>;
+  deleteMany(userId: number): Promise<void>;
 }

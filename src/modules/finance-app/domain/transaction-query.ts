@@ -5,11 +5,13 @@ export type GroupBy = "none" | "category" | "payment_method" | "day" | "month" |
 export type OrderBy = "date_desc" | "date_asc" | "amount_desc" | "amount_asc";
 
 export type TransactionFilters = {
+  userId: number;
   startDate?: Date;
   endDate?: Date;
   type?: TransactionType;
   categoryId?: number;
   paymentMethodId?: number;
+  description?: string;
   groupBy: GroupBy;
   orderBy: OrderBy;
   page: number;

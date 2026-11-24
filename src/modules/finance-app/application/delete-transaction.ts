@@ -10,13 +10,14 @@ import { withLockedPaymentMethods } from "./with-locked-payment-methods";
 export class DeleteTransaction {
   constructor(private readonly unitOfWork: UnitOfWork) {}
 
-  execute(id: number): Promise<void> {
+  execute(userId: number, id: number): Promise<void> {
     return this.unitOfWork.run(async ({ transactions, paymentMethods }) => {
-      const original = await transactions.lockById(id);
+      const original = await transactions.lockById(userId, id);
       if (original.type === "credit_card_payment") {
         assertCardPaymentHasTarget(original);
         await withLockedPaymentMethods(
           paymentMethods,
+          userId,
           [original.paymentMethodId, original.targetPaymentMethodId],
           (methods) => moveCardPayment(
             methods.get(original.paymentMethodId)!,
@@ -25,12 +26,13 @@ export class DeleteTransaction {
             "reverse",
           ),
         );
-        await transactions.delete(original.id);
+        await transactions.delete(userId, original.id);
         return;
       }
 
       await withLockedPaymentMethods(
         paymentMethods,
+        userId,
         [original.paymentMethodId],
         (methods) => moveCounters(
           methods.get(original.paymentMethodId)!,
@@ -39,7 +41,7 @@ export class DeleteTransaction {
           "reverse",
         ),
       );
-      await transactions.delete(original.id);
+      await transactions.delete(userId, original.id);
     });
   }
 }

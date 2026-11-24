@@ -73,6 +73,24 @@ describe("loadEnv", () => {
       directUrl: "postgresql://localhost/nummus",
       port: 4317,
       nodeEnv: "test",
+      telegramBotToken: undefined,
+      telegramWebhookSecret: undefined,
+    });
+  });
+
+  it("returns telegram settings when they are present", () => {
+    expect(
+      loadEnv({
+        DATABASE_URL: "postgresql://localhost/nummus",
+        DIRECT_URL: "postgresql://localhost/nummus",
+        PORT: "4317",
+        NODE_ENV: "test",
+        TELEGRAM_BOT_TOKEN: "bot-token",
+        TELEGRAM_WEBHOOK_SECRET: "hook-secret",
+      }),
+    ).toMatchObject({
+      telegramBotToken: "bot-token",
+      telegramWebhookSecret: "hook-secret",
     });
   });
 });

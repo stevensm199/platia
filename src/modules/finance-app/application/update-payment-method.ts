@@ -12,9 +12,9 @@ export type UpdatePaymentMethodPatch = {
 export class UpdatePaymentMethod {
   constructor(private readonly unitOfWork: UnitOfWork) {}
 
-  execute(id: number, patch: UpdatePaymentMethodPatch): Promise<PaymentMethodRecord> {
+  execute(userId: number, id: number, patch: UpdatePaymentMethodPatch): Promise<PaymentMethodRecord> {
     return this.unitOfWork.run(async ({ paymentMethods }) => {
-      const current = await paymentMethods.lockById(id);
+      const current = await paymentMethods.lockById(userId, id);
       const updated = {
         ...current,
         name: patch.name ?? current.name,
@@ -27,7 +27,7 @@ export class UpdatePaymentMethod {
         updated.currentBalance,
         updated.currentDebt,
       );
-      return paymentMethods.update(updated);
+      return paymentMethods.update(userId, updated);
     });
   }
 }

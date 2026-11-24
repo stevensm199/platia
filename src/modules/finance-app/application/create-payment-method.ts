@@ -16,7 +16,7 @@ export type CreatePaymentMethodInput = {
 export class CreatePaymentMethod {
   constructor(private readonly unitOfWork: UnitOfWork) {}
 
-  execute(input: CreatePaymentMethodInput): Promise<PaymentMethodRecord> {
+  execute(userId: number, input: CreatePaymentMethodInput): Promise<PaymentMethodRecord> {
     const paymentMethod = {
       name: input.name,
       type: input.type,
@@ -30,7 +30,7 @@ export class CreatePaymentMethod {
       paymentMethod.currentDebt,
     );
     return this.unitOfWork.run(({ paymentMethods }) =>
-      paymentMethods.insert(paymentMethod),
+      paymentMethods.insert(userId, paymentMethod),
     );
   }
 }

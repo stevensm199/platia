@@ -20,7 +20,7 @@ beforeAll(() => {
 
 beforeEach(async () => {
   await prisma.$executeRawUnsafe(
-    "TRUNCATE TABLE transactions, payment_methods, categories RESTART IDENTITY CASCADE",
+    "TRUNCATE TABLE transactions, payment_methods, categories, users RESTART IDENTITY CASCADE",
   );
   await seedCatalog(prisma);
 });
@@ -29,8 +29,43 @@ afterAll(async () => {
   await prisma.$disconnect();
 });
 
+const LEGACY_USER_ID = 1;
+const legacyIdentity = {
+  "x-channel": "telegram",
+  "x-external-user-id": "714131512",
+};
+
+function requestAs(identity: Record<string, string>) {
+  return {
+    get: (path: string) => request(app).get(path).set(identity),
+    post: (path: string) => request(app).post(path).set(identity),
+    patch: (path: string) => request(app).patch(path).set(identity),
+    delete: (path: string) => request(app).delete(path).set(identity),
+  };
+}
+
+const authenticatedRequest = requestAs(legacyIdentity);
+
+function createCategory(args: { data: Omit<Prisma.CategoryUncheckedCreateInput, "userId"> }) {
+  return prisma.category.create({ data: { ...args.data, userId: LEGACY_USER_ID } });
+}
+
+function createPaymentMethod(args: { data: Omit<Prisma.PaymentMethodUncheckedCreateInput, "userId"> }) {
+  return prisma.paymentMethod.create({ data: { ...args.data, userId: LEGACY_USER_ID } });
+}
+
+function createTransaction(args: { data: Omit<Prisma.TransactionUncheckedCreateInput, "userId"> }) {
+  return prisma.transaction.create({ data: { ...args.data, userId: LEGACY_USER_ID } });
+}
+
+function createTransactions(args: { data: Omit<Prisma.TransactionCreateManyInput, "userId">[] }) {
+  return prisma.transaction.createMany({
+    data: args.data.map((transaction) => ({ ...transaction, userId: LEGACY_USER_ID })),
+  });
+}
+
 function postTransaction(body: Record<string, unknown>) {
-  return request(app).post("/api/v1/transaction").send(body);
+  return authenticatedRequest.post("/api/v1/transaction").send(body);
 }
 
 function createCardPayment(body: Record<string, unknown>) {
@@ -38,13 +73,13 @@ function createCardPayment(body: Record<string, unknown>) {
 }
 
 function savingsAccount(currentBalance: number, name = "Ahorros") {
-  return prisma.paymentMethod.create({
+  return createPaymentMethod({
     data: { name, type: "savings", currentBalance },
   });
 }
 
 function creditCard(currentDebt: number, name: string) {
-  return prisma.paymentMethod.create({
+  return createPaymentMethod({
     data: { name, type: "credit", currentDebt },
   });
 }
@@ -66,16 +101,16 @@ describe("Seeded categories and wallet", () => {
     const wallet = await prisma.paymentMethod.findUniqueOrThrow({
       where: { id: 1 },
     });
-    const nextCategory = await prisma.category.create({
+    const nextCategory = await createCategory({
       data: { name: "Comida" },
     });
 
     expect(categories.map(({ id, name }) => ({ id, name }))).toEqual([
-      { id: 1, name: "Otros" },
-      { id: 2, name: "Ingresos" },
-      { id: 3, name: "Transferencias" },
+      { id: 1, name: "otros" },
+      { id: 2, name: "ingresos" },
+      { id: 3, name: "transferencias" },
     ]);
-    expect(category).toMatchObject({ id: 1, name: "Otros" });
+    expect(category).toMatchObject({ id: 1, name: "otros" });
     expect(wallet).toMatchObject({
       id: 1,
       name: "Billetera",
@@ -88,31 +123,312 @@ describe("Seeded categories and wallet", () => {
   });
 });
 
+describe("users and user-owned finance data", () => {
+  it("rejects missing and unknown finance identities", async () => {
+    const missing = await request(app).get("/api/v1/category");
+    const missingUser = await request(app).get("/api/v1/user");
+    const missingUserDelete = await request(app).delete("/api/v1/user");
+    const unknown = await request(app)
+      .get("/api/v1/category")
+      .set({ "x-channel": "telegram", "x-external-user-id": "unknown" });
+    const unknownUser = await request(app)
+      .get("/api/v1/user")
+      .set({ "x-channel": "telegram", "x-external-user-id": "unknown" });
+    const unknownUserDelete = await request(app)
+      .delete("/api/v1/user")
+      .set({ "x-channel": "telegram", "x-external-user-id": "unknown" });
+
+    expect(missing.status).toBe(400);
+    expect(missingUser.status).toBe(400);
+    expect(missingUserDelete.status).toBe(400);
+    expect(missingUser.body.error.message).toBe(
+      "x-channel and x-external-user-id headers are required",
+    );
+    expect(missing.body.error.message).toBe(
+      "x-channel and x-external-user-id headers are required",
+    );
+    expect(unknown.status).toBe(404);
+    expect(unknownUser.status).toBe(404);
+    expect(unknownUserDelete.status).toBe(404);
+    expect(unknownUser.body.error.message).toBe("User identity does not exist");
+    expect(unknown.body.error.message).toBe("User identity does not exist");
+  });
+
+  it("reads the current user's profile", async () => {
+    const response = await authenticatedRequest.get("/api/v1/user");
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({
+      id: LEGACY_USER_ID,
+      channel: "telegram",
+      external_id: "714131512",
+      email: "oscar.munoz.fajardo@gmail.com",
+      currency: "COP",
+      default_category_id: 1,
+      default_payment_method_id: 1,
+    });
+  });
+
+  it("deletes only the current user's finance data", async () => {
+    const created = await request(app).post("/api/v1/user").send({
+      channel: "whatsapp",
+      external_id: "delete-user",
+      email: "delete-user@example.com",
+      currency: "COP",
+    });
+    const user = await prisma.user.findUniqueOrThrow({
+      where: { channel_externalId: { channel: "whatsapp", externalId: "delete-user" } },
+    });
+    const ownerRequest = requestAs({
+      "x-channel": "whatsapp",
+      "x-external-user-id": "delete-user",
+    });
+    const otherTransaction = await postTransaction({ type: "income", amount: 75 });
+    const category = await ownerRequest.post("/api/v1/category").send({ name: "Private" });
+    const paymentMethod = await ownerRequest.post("/api/v1/payment-method").send({
+      name: "Private wallet",
+      type: "cash",
+      current_balance: 200,
+    });
+    const ownerTransaction = await ownerRequest.post("/api/v1/transaction").send({
+      type: "expense",
+      amount: 50,
+      category_id: category.body.id,
+      payment_method_id: paymentMethod.body.id,
+    });
+    const response = await ownerRequest.delete("/api/v1/user");
+    const profileAfterDelete = await ownerRequest.get("/api/v1/user");
+
+    expect(created.status).toBe(201);
+    expect(otherTransaction.status).toBe(201);
+    expect(ownerTransaction.status).toBe(201);
+    expect(response.status).toBe(204);
+    expect(response.text).toBe("");
+    expect(profileAfterDelete.status).toBe(404);
+    await expect(prisma.user.findUnique({ where: { id: user.id } })).resolves.toBeNull();
+    await expect(prisma.category.count({ where: { userId: user.id } })).resolves.toBe(0);
+    await expect(prisma.paymentMethod.count({ where: { userId: user.id } })).resolves.toBe(0);
+    await expect(prisma.transaction.count({ where: { userId: user.id } })).resolves.toBe(0);
+    await expect(prisma.user.count()).resolves.toBe(1);
+    await expect(prisma.category.count({ where: { userId: LEGACY_USER_ID } })).resolves.toBe(3);
+    await expect(prisma.paymentMethod.count({ where: { userId: LEGACY_USER_ID } })).resolves.toBe(1);
+    await expect(prisma.transaction.count({ where: { userId: LEGACY_USER_ID } })).resolves.toBe(1);
+  });
+
+  it("rolls back user deletion when a database relation prevents catalog cleanup", async () => {
+    const created = await request(app).post("/api/v1/user").send({
+      channel: "whatsapp",
+      external_id: "rollback-user",
+      email: "rollback-user@example.com",
+      currency: "COP",
+    });
+    const user = await prisma.user.findUniqueOrThrow({
+      where: { channel_externalId: { channel: "whatsapp", externalId: "rollback-user" } },
+    });
+    const ownerRequest = requestAs({
+      "x-channel": "whatsapp",
+      "x-external-user-id": "rollback-user",
+    });
+    const ownerTransaction = await ownerRequest.post("/api/v1/transaction").send({
+      type: "expense",
+      amount: 15,
+    });
+    const legacyCategoryReference = await prisma.transaction.create({
+      data: {
+        userId: LEGACY_USER_ID,
+        amount: 1,
+        description: "Foreign category reference",
+        type: "expense",
+        currency: "COP",
+        categoryId: user.defaultCategoryId,
+        paymentMethodId: 1,
+      },
+    });
+    const response = await ownerRequest.delete("/api/v1/user");
+
+    expect(created.status).toBe(201);
+    expect(ownerTransaction.status).toBe(201);
+    expect(response.status).toBe(500);
+    expect(response.body.error.message).toBe("Internal error");
+    await expect(prisma.user.findUnique({ where: { id: user.id } })).resolves.not.toBeNull();
+    await expect(prisma.category.count({ where: { userId: user.id } })).resolves.toBe(3);
+    await expect(prisma.paymentMethod.count({ where: { userId: user.id } })).resolves.toBe(1);
+    await expect(prisma.transaction.count({ where: { userId: user.id } })).resolves.toBe(1);
+    await expect(
+      prisma.transaction.findUnique({ where: { id: legacyCategoryReference.id } }),
+    ).resolves.not.toBeNull();
+  });
+
+  it("creates a user with a private starter catalog and rejects duplicate identities", async () => {
+    const input = {
+      channel: "whatsapp",
+      external_id: "user-42",
+      email: "user-42@example.com",
+      currency: "COP",
+    };
+    const created = await request(app).post("/api/v1/user").send(input);
+    const duplicateIdentity = await request(app)
+      .post("/api/v1/user")
+      .send({ ...input, email: "another@example.com" });
+    const duplicateEmail = await request(app)
+      .post("/api/v1/user")
+      .send({ ...input, channel: "telegram", external_id: "another-user" });
+    const unsupportedCurrency = await request(app)
+      .post("/api/v1/user")
+      .send({ ...input, channel: "telegram", external_id: "unsupported", email: "unsupported@example.com", currency: "GBP" });
+
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    expect(created.body).toMatchObject({
+      channel: input.channel,
+      external_id: input.external_id,
+      email: input.email,
+      currency: "COP",
+      default_category_id: expect.any(Number),
+      default_payment_method_id: expect.any(Number),
+    });
+    const user = await prisma.user.findUniqueOrThrow({ where: { email: input.email } });
+    const categories = await prisma.category.findMany({
+      where: { userId: user.id },
+      orderBy: { id: "asc" },
+    });
+    expect(categories.map((category) => category.name)).toEqual([
+      "otros",
+      "ingresos",
+      "transferencias",
+    ]);
+    expect(created.body.default_category_id).toBe(categories[0].id);
+    expect(user.defaultCategoryId).toBe(categories[0].id);
+    await expect(prisma.paymentMethod.findMany({ where: { userId: user.id } })).resolves.toMatchObject([
+      { name: "Billetera", type: "cash", currentBalance: 0, currentDebt: 0 },
+    ]);
+    expect(duplicateIdentity.status).toBe(409);
+    expect(duplicateEmail.status).toBe(409);
+    expect(unsupportedCurrency.status).toBe(400);
+    await expect(prisma.user.count()).resolves.toBe(2);
+  });
+
+  it("creates a USD user and leaves an existing Otros category unchanged", async () => {
+    const existing = await createCategory({ data: { name: "Otros" } });
+    const created = await request(app).post("/api/v1/user").send({
+      channel: "whatsapp",
+      external_id: "usd-user",
+      email: "usd-user@example.com",
+      currency: "USD",
+    });
+    const stored = await prisma.category.findUniqueOrThrow({ where: { id: existing.id } });
+    const categories = await prisma.category.findMany({
+      where: { userId: created.body.id },
+      orderBy: { id: "asc" },
+    });
+
+    expect(created.status).toBe(201);
+    expect(created.body.currency).toBe("USD");
+    expect(created.body.default_category_id).toBe(categories[0].id);
+    expect(categories[0].name).toBe("otros");
+    expect(stored.name).toBe("Otros");
+    expect(categories.map((category) => category.name)).toEqual([
+      "otros",
+      "ingresos",
+      "transferencias",
+    ]);
+  });
+
+  it("updates defaults and isolates catalog and transactions between users", async () => {
+    const created = await request(app).post("/api/v1/user").send({
+      channel: "whatsapp",
+      external_id: "isolated-user",
+      email: "isolated@example.com",
+      currency: "COP",
+    });
+    const identity = { "x-channel": "whatsapp", "x-external-user-id": "isolated-user" };
+    const otherRequest = requestAs(identity);
+    const category = await otherRequest.post("/api/v1/category").send({ name: "Travel" });
+    const paymentMethod = await otherRequest.post("/api/v1/payment-method").send({
+      name: "Travel wallet",
+      type: "cash",
+      current_balance: 500,
+    });
+    const updatedDefaults = await otherRequest.patch("/api/v1/user/defaults").send({
+      default_category_id: category.body.id,
+      default_payment_method_id: paymentMethod.body.id,
+    });
+
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    expect(updatedDefaults.status).toBe(200);
+    expect(updatedDefaults.body).toMatchObject({
+      default_category_id: category.body.id,
+      default_payment_method_id: paymentMethod.body.id,
+    });
+
+    const transaction = await otherRequest.post("/api/v1/transaction").send({
+      type: "expense",
+      amount: 100,
+    });
+    const ownCategories = await otherRequest.get("/api/v1/category");
+    const ownPaymentMethods = await otherRequest.get("/api/v1/payment-method");
+    const legacyTransactions = await authenticatedRequest.get("/api/v1/transaction");
+    const legacyCategories = await authenticatedRequest.get("/api/v1/category");
+    const legacyPaymentMethods = await authenticatedRequest.get("/api/v1/payment-method");
+    const hiddenCategory = await authenticatedRequest.get(`/api/v1/category/${category.body.id}`);
+    const hiddenPaymentMethod = await authenticatedRequest.get(`/api/v1/payment-method/${paymentMethod.body.id}`);
+    const hiddenTransaction = await authenticatedRequest.delete(`/api/v1/transaction/${transaction.body.id}`);
+    const rejectedDefault = await authenticatedRequest.patch("/api/v1/user/defaults").send({
+      default_category_id: category.body.id,
+    });
+    const rejectedPaymentMethodDefault = await authenticatedRequest.patch("/api/v1/user/defaults").send({
+      default_payment_method_id: paymentMethod.body.id,
+    });
+    const rejectedTransaction = await authenticatedRequest.post("/api/v1/transaction").send({
+      type: "expense",
+      amount: 100,
+      category_id: category.body.id,
+    });
+    const savedUser = await prisma.user.findUniqueOrThrow({ where: { email: "isolated@example.com" } });
+
+    expect(transaction.status).toBe(201);
+    expect(transaction.body.category).toEqual({ id: category.body.id, name: "Travel" });
+    expect(transaction.body.payment_method).toEqual({ id: paymentMethod.body.id, name: "Travel wallet" });
+    expect(ownCategories.body.data.map(({ id }: { id: number }) => id)).toContain(category.body.id);
+    expect(ownPaymentMethods.body.data.map(({ id }: { id: number }) => id)).toContain(paymentMethod.body.id);
+    expect(legacyTransactions.body.data).toEqual([]);
+    expect(legacyCategories.body.data.map(({ id }: { id: number }) => id)).not.toContain(category.body.id);
+    expect(legacyPaymentMethods.body.data.map(({ id }: { id: number }) => id)).not.toContain(paymentMethod.body.id);
+    expect(hiddenCategory.status).toBe(404);
+    expect(hiddenPaymentMethod.status).toBe(404);
+    expect(hiddenTransaction.status).toBe(404);
+    expect(rejectedDefault.status).toBe(400);
+    expect(rejectedPaymentMethodDefault.status).toBe(400);
+    expect(rejectedTransaction.status).toBe(400);
+    expect(savedUser.defaultCategoryId).toBe(category.body.id);
+    await expect(prisma.transaction.count({ where: { id: transaction.body.id } })).resolves.toBe(1);
+  });
+});
+
 describe("catalog repositories", () => {
   it("inserts and finds a category", async () => {
     const category = await prisma.$transaction((tx) =>
-      new PrismaCategoryRepository(tx).insert("Travel"),
+      new PrismaCategoryRepository(tx).insert(LEGACY_USER_ID, "Travel"),
     );
 
     expect(category).toMatchObject({ name: "Travel" });
     await expect(
       prisma.$transaction((tx) =>
-        new PrismaCategoryRepository(tx).findById(category.id),
+        new PrismaCategoryRepository(tx).findById(LEGACY_USER_ID, category.id),
       ),
     ).resolves.toEqual(category);
     await expect(
-      prisma.$transaction((tx) => new PrismaCategoryRepository(tx).findMany()),
+      prisma.$transaction((tx) => new PrismaCategoryRepository(tx).findMany(LEGACY_USER_ID)),
     ).resolves.toEqual([
-      { id: 1, name: "Otros" },
-      { id: 2, name: "Ingresos" },
-      { id: 3, name: "Transferencias" },
+      { id: 1, name: "otros" },
+      { id: 2, name: "ingresos" },
+      { id: 3, name: "transferencias" },
       category,
     ]);
   });
 
   it("inserts a payment method with typed counters", async () => {
     const paymentMethod = await prisma.$transaction((tx) =>
-      new PrismaPaymentMethodRepository(tx).insert({
+      new PrismaPaymentMethodRepository(tx).insert(LEGACY_USER_ID, {
         name: "Travel card",
         type: "credit",
         currentBalance: 0,
@@ -130,11 +446,11 @@ describe("catalog repositories", () => {
     });
     await expect(
       prisma.$transaction((tx) =>
-        new PrismaPaymentMethodRepository(tx).findById(paymentMethod.id),
+        new PrismaPaymentMethodRepository(tx).findById(LEGACY_USER_ID, paymentMethod.id),
       ),
     ).resolves.toEqual(paymentMethod);
     await expect(
-      prisma.$transaction((tx) => new PrismaPaymentMethodRepository(tx).findMany()),
+      prisma.$transaction((tx) => new PrismaPaymentMethodRepository(tx).findMany(LEGACY_USER_ID)),
     ).resolves.toMatchObject([
       { id: 1, name: "Billetera", type: "cash" },
       paymentMethod,
@@ -142,25 +458,25 @@ describe("catalog repositories", () => {
   });
 
   it("updates and deletes an unused category and reports missing IDs", async () => {
-    const category = await prisma.category.create({ data: { name: "Before" } });
+    const category = await createCategory({ data: { name: "Before" } });
     const updated = await prisma.$transaction((tx) =>
-      new PrismaCategoryRepository(tx).update(category.id, "After"),
+      new PrismaCategoryRepository(tx).update(LEGACY_USER_ID, category.id, "After"),
     );
     expect(updated).toEqual({ id: category.id, name: "After" });
 
     await prisma.$transaction((tx) =>
-      new PrismaCategoryRepository(tx).delete(category.id),
+      new PrismaCategoryRepository(tx).delete(LEGACY_USER_ID, category.id),
     );
     await expect(
       prisma.$transaction((tx) =>
-        new PrismaCategoryRepository(tx).update(category.id, "Missing"),
+        new PrismaCategoryRepository(tx).update(LEGACY_USER_ID, category.id, "Missing"),
       ),
     ).rejects.toThrow(NotFoundError);
   });
 
   it("translates a category foreign-key restriction to a conflict", async () => {
-    const category = await prisma.category.create({ data: { name: "In use" } });
-    await prisma.transaction.create({
+    const category = await createCategory({ data: { name: "In use" } });
+    await createTransaction({
       data: {
         amount: 1,
         description: "Uses category",
@@ -172,7 +488,7 @@ describe("catalog repositories", () => {
 
     await expect(
       prisma.$transaction((tx) =>
-        new PrismaCategoryRepository(tx).delete(category.id),
+        new PrismaCategoryRepository(tx).delete(LEGACY_USER_ID, category.id),
       ),
     ).rejects.toThrow(ConflictError);
     await expect(
@@ -181,22 +497,22 @@ describe("catalog repositories", () => {
   });
 
   it("locks, updates, and deletes a payment method", async () => {
-    const paymentMethod = await prisma.paymentMethod.create({
+    const paymentMethod = await createPaymentMethod({
       data: { name: "Before", type: "cash" },
     });
     const updated = await prisma.$transaction(async (tx) => {
       const repository = new PrismaPaymentMethodRepository(tx);
-      const locked = await repository.lockById(paymentMethod.id);
-      return repository.update({ ...locked, name: "After", currentBalance: 200 });
+      const locked = await repository.lockById(LEGACY_USER_ID, paymentMethod.id);
+      return repository.update(LEGACY_USER_ID, { ...locked, name: "After", currentBalance: 200 });
     });
     expect(updated).toMatchObject({ name: "After", currentBalance: 200 });
 
     await prisma.$transaction((tx) =>
-      new PrismaPaymentMethodRepository(tx).delete(paymentMethod.id),
+      new PrismaPaymentMethodRepository(tx).delete(LEGACY_USER_ID, paymentMethod.id),
     );
     await expect(
       prisma.$transaction((tx) =>
-        new PrismaPaymentMethodRepository(tx).lockById(paymentMethod.id),
+        new PrismaPaymentMethodRepository(tx).lockById(LEGACY_USER_ID, paymentMethod.id),
       ),
     ).rejects.toThrow(NotFoundError);
   });
@@ -204,7 +520,7 @@ describe("catalog repositories", () => {
 
 describe("create catalog resources", () => {
   it("creates a category", async () => {
-    const response = await request(app)
+    const response = await authenticatedRequest
       .post("/api/v1/category")
       .send({ name: "Travel" });
 
@@ -213,7 +529,7 @@ describe("create catalog resources", () => {
   });
 
   it("creates a payment method and returns its counters in snake_case", async () => {
-    const response = await request(app)
+    const response = await authenticatedRequest
       .post("/api/v1/payment-method")
       .send({ name: "Savings account", type: "savings", current_balance: 1500 });
 
@@ -232,7 +548,7 @@ describe("create catalog resources", () => {
     ["cash", { current_balance: 2500 }, 2500, 0],
     ["credit", { current_debt: 7500, current_limit: 20_000 }, 0, 7500],
   ] as const)("creates a %s method with its compatible counters", async (type, counters, balance, debt) => {
-    const response = await request(app)
+    const response = await authenticatedRequest
       .post("/api/v1/payment-method")
       .send({ name: "Test method", type, ...counters });
 
@@ -256,7 +572,7 @@ describe("create catalog resources", () => {
     ["credit", { current_balance: 1 }],
   ] as const)("rejects incompatible counters for %s without creating a row", async (type, counters) => {
     const countBefore = await prisma.paymentMethod.count();
-    const response = await request(app)
+    const response = await authenticatedRequest
       .post("/api/v1/payment-method")
       .send({ name: "Invalid method", type, ...counters });
 
@@ -278,7 +594,7 @@ describe("create catalog resources", () => {
       prisma.category.count(),
       prisma.paymentMethod.count(),
     ]);
-    const response = await request(app).post(path).send(body);
+    const response = await authenticatedRequest.post(path).send(body);
 
     expect(response.status).toBe(400);
     expect(response.body.error.code).toBe("validation_error");
@@ -289,32 +605,32 @@ describe("create catalog resources", () => {
 
 describe("read catalog resources", () => {
   it("lists categories in ascending ID order and gets one by ID", async () => {
-    await prisma.category.create({ data: { name: "Travel" } });
-    const listResponse = await request(app).get("/api/v1/category");
-    const getResponse = await request(app).get("/api/v1/category/2");
+    await createCategory({ data: { name: "Travel" } });
+    const listResponse = await authenticatedRequest.get("/api/v1/category");
+    const getResponse = await authenticatedRequest.get("/api/v1/category/2");
 
     expect(listResponse.status).toBe(200);
     expect(listResponse.body.data).toEqual([
-      { id: 1, name: "Otros" },
-      { id: 2, name: "Ingresos" },
-      { id: 3, name: "Transferencias" },
+      { id: 1, name: "otros" },
+      { id: 2, name: "ingresos" },
+      { id: 3, name: "transferencias" },
       { id: 4, name: "Travel" },
     ]);
     expect(getResponse.status).toBe(200);
-    expect(getResponse.body).toEqual({ id: 2, name: "Ingresos" });
+    expect(getResponse.body).toEqual({ id: 2, name: "ingresos" });
   });
 
   it("returns 404 for a missing category", async () => {
-    const response = await request(app).get("/api/v1/category/999");
+    const response = await authenticatedRequest.get("/api/v1/category/999");
     expect(response.status).toBe(404);
   });
 
   it("lists payment methods in ascending ID order and gets one by ID", async () => {
-    await prisma.paymentMethod.create({
+    await createPaymentMethod({
       data: { name: "Savings", type: "savings", currentBalance: 1500 },
     });
-    const listResponse = await request(app).get("/api/v1/payment-method");
-    const getResponse = await request(app).get("/api/v1/payment-method/1");
+    const listResponse = await authenticatedRequest.get("/api/v1/payment-method");
+    const getResponse = await authenticatedRequest.get("/api/v1/payment-method/1");
 
     expect(listResponse.status).toBe(200);
     expect(listResponse.body.data).toEqual([
@@ -340,21 +656,21 @@ describe("read catalog resources", () => {
   });
 
   it("returns 404 for a missing payment method", async () => {
-    const response = await request(app).get("/api/v1/payment-method/999");
+    const response = await authenticatedRequest.get("/api/v1/payment-method/999");
     expect(response.status).toBe(404);
   });
 });
 
 describe("update and delete catalog resources", () => {
   it("renames a category and rejects empty or missing updates", async () => {
-    const category = await prisma.category.create({ data: { name: "Before" } });
-    const updated = await request(app)
+    const category = await createCategory({ data: { name: "Before" } });
+    const updated = await authenticatedRequest
       .patch(`/api/v1/category/${category.id}`)
       .send({ name: "After" });
-    const invalid = await request(app)
+    const invalid = await authenticatedRequest
       .patch(`/api/v1/category/${category.id}`)
       .send({ name: "" });
-    const missing = await request(app)
+    const missing = await authenticatedRequest
       .patch("/api/v1/category/999")
       .send({ name: "Missing" });
 
@@ -368,15 +684,15 @@ describe("update and delete catalog resources", () => {
   });
 
   it("deletes an unused category and protects one used by a transaction", async () => {
-    const unused = await prisma.category.create({ data: { name: "Unused" } });
-    const deleted = await request(app).delete(`/api/v1/category/${unused.id}`);
+    const unused = await createCategory({ data: { name: "Unused" } });
+    const deleted = await authenticatedRequest.delete(`/api/v1/category/${unused.id}`);
     expect(deleted.status).toBe(204);
     await expect(
       prisma.category.findUnique({ where: { id: unused.id } }),
     ).resolves.toBeNull();
 
-    const used = await prisma.category.create({ data: { name: "Used" } });
-    await prisma.transaction.create({
+    const used = await createCategory({ data: { name: "Used" } });
+    await createTransaction({
       data: {
         amount: 1,
         description: "Uses category",
@@ -385,8 +701,8 @@ describe("update and delete catalog resources", () => {
         paymentMethodId: 1,
       },
     });
-    const conflict = await request(app).delete(`/api/v1/category/${used.id}`);
-    const missing = await request(app).delete("/api/v1/category/999");
+    const conflict = await authenticatedRequest.delete(`/api/v1/category/${used.id}`);
+    const missing = await authenticatedRequest.delete("/api/v1/category/999");
 
     expect(conflict.status).toBe(409);
     expect(conflict.body.error.code).toBe("conflict");
@@ -398,21 +714,21 @@ describe("update and delete catalog resources", () => {
 
   it("protects seeded default categories and payment method", async () => {
     const attempts = await Promise.all([
-      request(app).delete("/api/v1/category/1"),
-      request(app).delete("/api/v1/category/2"),
-      request(app).delete("/api/v1/category/3"),
-      request(app).delete("/api/v1/payment-method/1"),
+      authenticatedRequest.delete("/api/v1/category/1"),
+      authenticatedRequest.delete("/api/v1/category/2"),
+      authenticatedRequest.delete("/api/v1/category/3"),
+      authenticatedRequest.delete("/api/v1/payment-method/1"),
     ]);
 
     expect(attempts.map((response) => response.status)).toEqual([409, 409, 409, 409]);
-    await expect(prisma.category.findUnique({ where: { id: 1 } })).resolves.toMatchObject({ name: "Otros" });
-    await expect(prisma.category.findUnique({ where: { id: 2 } })).resolves.toMatchObject({ name: "Ingresos" });
-    await expect(prisma.category.findUnique({ where: { id: 3 } })).resolves.toMatchObject({ name: "Transferencias" });
+    await expect(prisma.category.findUnique({ where: { id: 1 } })).resolves.toMatchObject({ name: "otros" });
+    await expect(prisma.category.findUnique({ where: { id: 2 } })).resolves.toMatchObject({ name: "ingresos" });
+    await expect(prisma.category.findUnique({ where: { id: 3 } })).resolves.toMatchObject({ name: "transferencias" });
     await expect(prisma.paymentMethod.findUnique({ where: { id: 1 } })).resolves.toMatchObject({ name: "Billetera" });
   });
 
   it("updates compatible payment method fields and preserves type", async () => {
-    const response = await request(app)
+    const response = await authenticatedRequest
       .patch("/api/v1/payment-method/1")
       .send({ name: "Daily cash", current_balance: 10_000, current_limit: 20_000 });
     expect(response.status).toBe(200);
@@ -426,14 +742,14 @@ describe("update and delete catalog resources", () => {
     });
 
     const before = await prisma.paymentMethod.findUniqueOrThrow({ where: { id: 1 } });
-    const incompatible = await request(app)
+    const incompatible = await authenticatedRequest
       .patch("/api/v1/payment-method/1")
       .send({ current_debt: 1 });
-    const typeChange = await request(app)
+    const typeChange = await authenticatedRequest
       .patch("/api/v1/payment-method/1")
       .send({ type: "credit" });
-    const empty = await request(app).patch("/api/v1/payment-method/1").send({});
-    const missing = await request(app)
+    const empty = await authenticatedRequest.patch("/api/v1/payment-method/1").send({});
+    const missing = await authenticatedRequest
       .patch("/api/v1/payment-method/999")
       .send({ name: "Missing" });
 
@@ -448,10 +764,10 @@ describe("update and delete catalog resources", () => {
 
   it("updates a credit card debt without allowing a balance", async () => {
     const card = await creditCard(5000, "Visa");
-    const updated = await request(app)
+    const updated = await authenticatedRequest
       .patch(`/api/v1/payment-method/${card.id}`)
       .send({ current_debt: 3000 });
-    const invalid = await request(app)
+    const invalid = await authenticatedRequest
       .patch(`/api/v1/payment-method/${card.id}`)
       .send({ current_balance: 1 });
 
@@ -464,10 +780,10 @@ describe("update and delete catalog resources", () => {
   });
 
   it("deletes an unused payment method and protects methods used as source or target", async () => {
-    const unused = await prisma.paymentMethod.create({
+    const unused = await createPaymentMethod({
       data: { name: "Unused", type: "cash" },
     });
-    const deleted = await request(app).delete(`/api/v1/payment-method/${unused.id}`);
+    const deleted = await authenticatedRequest.delete(`/api/v1/payment-method/${unused.id}`);
     expect(deleted.status).toBe(204);
     await expect(
       prisma.paymentMethod.findUnique({ where: { id: unused.id } }),
@@ -479,7 +795,7 @@ describe("update and delete catalog resources", () => {
       type: "expense",
       payment_method_id: source.id,
     });
-    const sourceConflict = await request(app).delete(
+    const sourceConflict = await authenticatedRequest.delete(
       `/api/v1/payment-method/${source.id}`,
     );
     const target = await creditCard(5000, "Visa");
@@ -488,10 +804,10 @@ describe("update and delete catalog resources", () => {
       payment_method_id: 1,
       target_payment_method_id: target.id,
     });
-    const targetConflict = await request(app).delete(
+    const targetConflict = await authenticatedRequest.delete(
       `/api/v1/payment-method/${target.id}`,
     );
-    const missing = await request(app).delete("/api/v1/payment-method/999");
+    const missing = await authenticatedRequest.delete("/api/v1/payment-method/999");
 
     expect(sourceUse.status).toBe(201);
     expect(sourceConflict.status).toBe(409);
@@ -514,10 +830,10 @@ describe("create a transaction", () => {
     expect(response.body).toMatchObject({
       amount: 25000,
       type: "expense" as const,
-      description: "Otros",
+      description: "otros",
       currency: "COP",
       target_payment_method: null,
-      category: { id: 1, name: "Otros" },
+      category: { id: 1, name: "otros" },
       payment_method: { id: 1, name: "Billetera" },
     });
     expect(
@@ -526,8 +842,8 @@ describe("create a transaction", () => {
   });
 
   it("Full body", async () => {
-    const category = await prisma.category.create({ data: { name: "Comida" } });
-    const paymentMethod = await prisma.paymentMethod.create({
+    const category = await createCategory({ data: { name: "Comida" } });
+    const paymentMethod = await createPaymentMethod({
       data: { name: "Visa Oro", type: "credit" },
     });
 
@@ -551,8 +867,16 @@ describe("create a transaction", () => {
     });
   });
 
+  it("uses ingresos when an income omits the category", async () => {
+    const response = await postTransaction({ amount: 2500, type: "income" });
+
+    expect(response.status).toBe(201);
+    expect(response.body.category).toEqual({ id: 2, name: "ingresos" });
+    expect(response.body.description).toBe("ingresos");
+  });
+
   it("defaults the description to the selected category name", async () => {
-    const category = await prisma.category.create({ data: { name: "Comida" } });
+    const category = await createCategory({ data: { name: "Comida" } });
     const response = await postTransaction({
       amount: 2500,
       type: "income",
@@ -587,7 +911,7 @@ describe("create a transaction", () => {
 
 describe("financial impact", () => {
   it("Expense on savings", async () => {
-    const paymentMethod = await prisma.paymentMethod.create({
+    const paymentMethod = await createPaymentMethod({
       data: {
         name: "Ahorro",
         type: "savings",
@@ -610,7 +934,7 @@ describe("financial impact", () => {
   });
 
   it("Expense on cash", async () => {
-    const paymentMethod = await prisma.paymentMethod.create({
+    const paymentMethod = await createPaymentMethod({
       data: { name: "Efectivo", type: "cash", currentBalance: 100_000 },
     });
     await postTransaction({
@@ -627,7 +951,7 @@ describe("financial impact", () => {
   });
 
   it("Expense on credit", async () => {
-    const paymentMethod = await prisma.paymentMethod.create({
+    const paymentMethod = await createPaymentMethod({
       data: {
         name: "Visa",
         type: "credit",
@@ -650,7 +974,7 @@ describe("financial impact", () => {
   });
 
   it("Income on savings", async () => {
-    const paymentMethod = await prisma.paymentMethod.create({
+    const paymentMethod = await createPaymentMethod({
       data: { name: "Ahorro", type: "savings", currentBalance: 100_000 },
     });
     await postTransaction({
@@ -665,7 +989,7 @@ describe("financial impact", () => {
   });
 
   it("Income on cash", async () => {
-    const paymentMethod = await prisma.paymentMethod.create({
+    const paymentMethod = await createPaymentMethod({
       data: { name: "Efectivo", type: "cash", currentBalance: 10_000 },
     });
     await postTransaction({
@@ -680,7 +1004,7 @@ describe("financial impact", () => {
   });
 
   it("Income on credit", async () => {
-    const paymentMethod = await prisma.paymentMethod.create({
+    const paymentMethod = await createPaymentMethod({
       data: {
         name: "Visa",
         type: "credit",
@@ -702,7 +1026,7 @@ describe("financial impact", () => {
   });
 
   it("Balance goes negative", async () => {
-    const paymentMethod = await prisma.paymentMethod.create({
+    const paymentMethod = await createPaymentMethod({
       data: { name: "Bolsillo", type: "cash", currentBalance: 1000 },
     });
     const response = await postTransaction({
@@ -758,7 +1082,7 @@ describe("reject invalid create input", () => {
     expect(await ledgerSnapshot()).toEqual(before);
   });
 
-  it("rejects a non-COP currency", async () => {
+  it("rejects a currency that is not the owner's", async () => {
     const response = await postTransaction({
       amount: 1000,
       type: "expense" as const,
@@ -767,6 +1091,23 @@ describe("reject invalid create input", () => {
     expect(response.status).toBe(400);
     expect(response.body.error.code).toBe("validation_error");
     expect(await prisma.transaction.count()).toBe(0);
+  });
+
+  it("stores an omitted currency as the owner's EUR", async () => {
+    const created = await request(app).post("/api/v1/user").send({
+      channel: "whatsapp",
+      external_id: "eur-user",
+      email: "eur-user@example.com",
+      currency: "EUR",
+    });
+    const response = await requestAs({
+      "x-channel": "whatsapp",
+      "x-external-user-id": "eur-user",
+    }).post("/api/v1/transaction").send({ type: "expense", amount: 10 });
+
+    expect(created.status).toBe(201);
+    expect(response.status).toBe(201);
+    expect(response.body.currency).toBe("EUR");
   });
 
   it("Description too long", async () => {
@@ -847,7 +1188,7 @@ describe("reject invalid create input", () => {
 
 describe("update a transaction", () => {
   it("Transaction does not exist", async () => {
-    const response = await request(app)
+    const response = await authenticatedRequest
       .patch("/api/v1/transaction/999999")
       .send({ description: "x" });
     expect(response.status).toBe(404);
@@ -855,14 +1196,14 @@ describe("update a transaction", () => {
   });
 
   it("Malformed id", async () => {
-    const response = await request(app)
+    const response = await authenticatedRequest
       .patch("/api/v1/transaction/abc")
       .send({ description: "x" });
     expect(response.status).toBe(400);
   });
 
   it("Description-only change", async () => {
-    const paymentMethod = await prisma.paymentMethod.create({
+    const paymentMethod = await createPaymentMethod({
       data: {
         name: "Ahorro",
         type: "savings",
@@ -879,7 +1220,7 @@ describe("update a transaction", () => {
       where: { id: paymentMethod.id },
     });
 
-    const response = await request(app)
+    const response = await authenticatedRequest
       .patch(`/api/v1/transaction/${created.body.id}`)
       .send({ description: "Almuerzo" });
     const after = await prisma.paymentMethod.findUniqueOrThrow({
@@ -900,7 +1241,7 @@ describe("update a transaction", () => {
   });
 
   it("Amount change adjusts the same method", async () => {
-    const paymentMethod = await prisma.paymentMethod.create({
+    const paymentMethod = await createPaymentMethod({
       data: { name: "Ahorro", type: "savings", currentBalance: 100_000 },
     });
     const created = await postTransaction({
@@ -912,7 +1253,7 @@ describe("update a transaction", () => {
       where: { id: paymentMethod.id },
     });
 
-    const response = await request(app)
+    const response = await authenticatedRequest
       .patch(`/api/v1/transaction/${created.body.id}`)
       .send({ amount: 30000 });
     const after = await prisma.paymentMethod.findUniqueOrThrow({
@@ -925,10 +1266,10 @@ describe("update a transaction", () => {
   });
 
   it("Moving the payment method", async () => {
-    const methodA = await prisma.paymentMethod.create({
+    const methodA = await createPaymentMethod({
       data: { name: "Ahorro", type: "savings", currentBalance: 100_000 },
     });
-    const methodB = await prisma.paymentMethod.create({
+    const methodB = await createPaymentMethod({
       data: { name: "Visa", type: "credit", currentDebt: 10 },
     });
     const created = await postTransaction({
@@ -940,7 +1281,7 @@ describe("update a transaction", () => {
       where: { id: methodA.id },
     });
 
-    const response = await request(app)
+    const response = await authenticatedRequest
       .patch(`/api/v1/transaction/${created.body.id}`)
       .send({ payment_method_id: methodB.id });
     const restoredA = await prisma.paymentMethod.findUniqueOrThrow({
@@ -962,7 +1303,7 @@ describe("update a transaction", () => {
   });
 
   it("Type change reverses the original direction", async () => {
-    const paymentMethod = await prisma.paymentMethod.create({
+    const paymentMethod = await createPaymentMethod({
       data: { name: "Ahorro", type: "savings", currentBalance: 100_000 },
     });
     const created = await postTransaction({
@@ -974,7 +1315,7 @@ describe("update a transaction", () => {
       where: { id: paymentMethod.id },
     });
 
-    const response = await request(app)
+    const response = await authenticatedRequest
       .patch(`/api/v1/transaction/${created.body.id}`)
       .send({ type: "income" });
     const after = await prisma.paymentMethod.findUniqueOrThrow({
@@ -986,7 +1327,7 @@ describe("update a transaction", () => {
   });
 
   it("Invalid patch does not commit", async () => {
-    const paymentMethod = await prisma.paymentMethod.create({
+    const paymentMethod = await createPaymentMethod({
       data: { name: "Ahorro", type: "savings", currentBalance: 100_000 },
     });
     const created = await postTransaction({
@@ -1004,7 +1345,7 @@ describe("update a transaction", () => {
 
     for (const patch of invalidPatches) {
       const before = await ledgerSnapshot();
-      const response = await request(app)
+      const response = await authenticatedRequest
         .patch(`/api/v1/transaction/${created.body.id}`)
         .send(patch);
       const after = await ledgerSnapshot();
@@ -1016,7 +1357,7 @@ describe("update a transaction", () => {
 
 describe("delete a transaction", () => {
   it("Delete a savings expense", async () => {
-    const paymentMethod = await prisma.paymentMethod.create({
+    const paymentMethod = await createPaymentMethod({
       data: { name: "Ahorro", type: "savings", currentBalance: 100_000 },
     });
     const created = await postTransaction({
@@ -1028,7 +1369,7 @@ describe("delete a transaction", () => {
       where: { id: paymentMethod.id },
     });
 
-    const response = await request(app).delete(
+    const response = await authenticatedRequest.delete(
       `/api/v1/transaction/${created.body.id}`,
     );
     const after = await prisma.paymentMethod.findUniqueOrThrow({
@@ -1044,7 +1385,7 @@ describe("delete a transaction", () => {
   });
 
   it("Delete a credit income", async () => {
-    const paymentMethod = await prisma.paymentMethod.create({
+    const paymentMethod = await createPaymentMethod({
       data: { name: "Visa", type: "credit", currentDebt: 30_000 },
     });
     const created = await postTransaction({
@@ -1056,7 +1397,7 @@ describe("delete a transaction", () => {
       where: { id: paymentMethod.id },
     });
 
-    await request(app).delete(`/api/v1/transaction/${created.body.id}`);
+    await authenticatedRequest.delete(`/api/v1/transaction/${created.body.id}`);
     const after = await prisma.paymentMethod.findUniqueOrThrow({
       where: { id: paymentMethod.id },
     });
@@ -1072,7 +1413,7 @@ describe("delete a transaction", () => {
       where: { id: 1 },
       data: { currentBalance: 80 },
     });
-    const response = await request(app).delete("/api/v1/transaction/999999");
+    const response = await authenticatedRequest.delete("/api/v1/transaction/999999");
     const wallet = await prisma.paymentMethod.findUniqueOrThrow({
       where: { id: 1 },
     });
@@ -1152,7 +1493,7 @@ describe("repository lock contracts", () => {
   it("lockMany throws ValidationError with the missing payment method id", async () => {
     const error = await prisma
       .$transaction((tx) =>
-        new PrismaPaymentMethodRepository(tx).lockMany([999_999]),
+        new PrismaPaymentMethodRepository(tx).lockMany(LEGACY_USER_ID, [999_999]),
       )
       .catch((caught: unknown) => caught);
 
@@ -1164,7 +1505,7 @@ describe("repository lock contracts", () => {
 
   it("lockById throws NotFoundError with the missing transaction id", async () => {
     const error = await prisma
-      .$transaction((tx) => new PrismaTransactionRepository(tx).lockById(999_999))
+      .$transaction((tx) => new PrismaTransactionRepository(tx).lockById(LEGACY_USER_ID, 999_999))
       .catch((caught: unknown) => caught);
 
     expect(error).toBeInstanceOf(NotFoundError);
@@ -1186,14 +1527,14 @@ describe("repository lock contracts", () => {
     });
 
     const firstOperation = prisma.$transaction(async (tx) => {
-      await new PrismaPaymentMethodRepository(tx).lockMany([first.id, second.id]);
+      await new PrismaPaymentMethodRepository(tx).lockMany(LEGACY_USER_ID, [first.id, second.id]);
       signalFirstLocked();
       await holdFirst;
     });
     await firstLocked;
 
     const secondOperation = prisma.$transaction((tx) =>
-      new PrismaPaymentMethodRepository(tx).lockMany([second.id, first.id]),
+      new PrismaPaymentMethodRepository(tx).lockMany(LEGACY_USER_ID, [second.id, first.id]),
     );
     const operations = Promise.all([firstOperation, secondOperation]);
     await new Promise((resolve) => setTimeout(resolve, 50));
@@ -1204,18 +1545,107 @@ describe("repository lock contracts", () => {
 });
 
 describe("query transactions", () => {
+  it("searches by description and reports current card debt", async () => {
+    await createTransactions({
+      data: [
+        {
+          amount: 1000,
+          type: "expense",
+          description: "Administracion apto3",
+          categoryId: 1,
+          paymentMethodId: 1,
+        },
+        {
+          amount: 4000,
+          type: "expense",
+          description: "Almuerzo",
+          categoryId: 1,
+          paymentMethodId: 1,
+        },
+        {
+          amount: 9000,
+          type: "income",
+          description: "Nomina",
+          categoryId: 2,
+          paymentMethodId: 1,
+        },
+      ],
+    });
+    await creditCard(10_000, "Visa");
+    await creditCard(2_500, "Mastercard");
+
+    const all = await authenticatedRequest.get("/api/v1/transaction");
+    const matched = await authenticatedRequest
+      .get("/api/v1/transaction")
+      .query({ description: "APTO3" });
+    const blank = await authenticatedRequest
+      .get("/api/v1/transaction")
+      .query({ description: "   " });
+    const tooLong = await authenticatedRequest
+      .get("/api/v1/transaction")
+      .query({ description: "a".repeat(151) });
+    const unmatched = await authenticatedRequest
+      .get("/api/v1/transaction")
+      .query({ description: "no-such-text" });
+    const grouped = await authenticatedRequest
+      .get("/api/v1/transaction")
+      .query({ group_by: "day", description: "no-such-text" });
+
+    expect(all.body.summary).toEqual({
+      total_income: 9000,
+      total_expense: 5000,
+      total_debts: 12_500,
+    });
+    expect(matched.status).toBe(200);
+    expect(matched.body.data.map((row: { description: string }) => row.description)).toEqual([
+      "Administracion apto3",
+    ]);
+    expect(matched.body.summary).toEqual({
+      total_income: 0,
+      total_expense: 1000,
+      total_debts: 12_500,
+    });
+    expect(blank.body.meta.total_records).toBe(3);
+    expect(tooLong.status).toBe(400);
+    expect(tooLong.body.error.code).toBe("validation_error");
+    expect(unmatched.body.data).toEqual([]);
+    expect(unmatched.body.summary.total_expense).toBe(0);
+    expect(unmatched.body.summary.total_debts).toBe(12_500);
+    expect(grouped.body.summary).toBeUndefined();
+    expect(grouped.body.data).toEqual([]);
+  });
+
+  it("keeps a UTC day boundary at midnight", async () => {
+    await createTransactions({
+      data: [transactionAt("2026-01-02T01:00:00.000Z", 8)],
+    });
+
+    const previousDay = await authenticatedRequest.get("/api/v1/transaction").query({
+      start_date: "2026-01-01T00:00:00.000Z",
+      end_date: "2026-01-01T23:59:59.999Z",
+    });
+    const sameDay = await authenticatedRequest.get("/api/v1/transaction").query({
+      start_date: "2026-01-02T00:00:00.000Z",
+      end_date: "2026-01-02T23:59:59.999Z",
+    });
+
+    expect(previousDay.body.meta.total_records).toBe(0);
+    expect(sameDay.body.meta.total_records).toBe(1);
+    expect(sameDay.body.data[0].date).toBe("2026-01-02T01:00:00.000Z");
+  });
+
   it("Empty history", async () => {
-    const response = await request(app).get("/api/v1/transaction");
+    const response = await authenticatedRequest.get("/api/v1/transaction");
     expect(response.status).toBe(200);
     expect(response.body).toEqual({
       meta: { total_records: 0, current_page: 1, total_pages: 0, limit: 20 },
-      summary: { total_income: 0, total_expense: 0 },
+      summary: { total_income: 0, total_expense: 0, total_debts: 0 },
       data: [],
     });
   });
 
   it("Defaults paginate and summarize the full filter", async () => {
-    await prisma.transaction.createMany({
+    await createTransactions({
       data: [
         ...Array.from({ length: 25 }, (_, index) => ({
           amount: 1000,
@@ -1236,7 +1666,7 @@ describe("query transactions", () => {
       ],
     });
 
-    const response = await request(app).get("/api/v1/transaction");
+    const response = await authenticatedRequest.get("/api/v1/transaction");
     expect(response.body.meta).toEqual({
       total_records: 45,
       current_page: 1,
@@ -1247,12 +1677,13 @@ describe("query transactions", () => {
     expect(response.body.summary).toEqual({
       total_income: 40_000,
       total_expense: 25_000,
+      total_debts: 0,
     });
   });
 
   it("Item shape", async () => {
-    const category = await prisma.category.create({ data: { name: "Comida" } });
-    const paymentMethod = await prisma.paymentMethod.create({
+    const category = await createCategory({ data: { name: "Comida" } });
+    const paymentMethod = await createPaymentMethod({
       data: { name: "Visa Oro", type: "credit" },
     });
     const created = await postTransaction({
@@ -1264,7 +1695,7 @@ describe("query transactions", () => {
       date: "2023-10-27T12:30:00Z",
     });
 
-    const response = await request(app).get("/api/v1/transaction");
+    const response = await authenticatedRequest.get("/api/v1/transaction");
     expect(response.body.data).toEqual([
       {
         id: created.body.id,
@@ -1281,7 +1712,7 @@ describe("query transactions", () => {
   });
 
   it("Date window", async () => {
-    await prisma.transaction.createMany({
+    await createTransactions({
       data: [
         transactionAt("2023-10-01T00:00:00.000Z", 1),
         transactionAt("2023-10-15T00:00:00.000Z", 2),
@@ -1290,7 +1721,7 @@ describe("query transactions", () => {
       ],
     });
 
-    const response = await request(app).get("/api/v1/transaction").query({
+    const response = await authenticatedRequest.get("/api/v1/transaction").query({
       start_date: "2023-10-15T00:00:00.000Z",
       end_date: "2023-10-31T00:00:00.000Z",
     });
@@ -1304,14 +1735,14 @@ describe("query transactions", () => {
   });
 
   it("One date bound", async () => {
-    await prisma.transaction.createMany({
+    await createTransactions({
       data: [
         transactionAt("2023-10-01T00:00:00.000Z", 1),
         transactionAt("2023-10-15T00:00:00.000Z", 2),
       ],
     });
 
-    const response = await request(app)
+    const response = await authenticatedRequest
       .get("/api/v1/transaction")
       .query({ start_date: "2023-10-15T00:00:00.000Z" });
     expect(
@@ -1320,17 +1751,17 @@ describe("query transactions", () => {
   });
 
   it("Exact filters", async () => {
-    const comida = await prisma.category.create({ data: { name: "Comida" } });
-    const transporte = await prisma.category.create({
+    const comida = await createCategory({ data: { name: "Comida" } });
+    const transporte = await createCategory({
       data: { name: "Transporte" },
     });
-    const visa = await prisma.paymentMethod.create({
+    const visa = await createPaymentMethod({
       data: { name: "Visa", type: "credit" },
     });
-    const cash = await prisma.paymentMethod.create({
+    const cash = await createPaymentMethod({
       data: { name: "Caja", type: "cash" },
     });
-    await prisma.transaction.createMany({
+    await createTransactions({
       data: [
         {
           amount: 100,
@@ -1363,7 +1794,7 @@ describe("query transactions", () => {
       ],
     });
 
-    const response = await request(app).get("/api/v1/transaction").query({
+    const response = await authenticatedRequest.get("/api/v1/transaction").query({
       type: "expense" as const,
       category_id: comida.id,
       payment_method_id: visa.id,
@@ -1374,11 +1805,12 @@ describe("query transactions", () => {
     expect(response.body.summary).toEqual({
       total_income: 0,
       total_expense: 100,
+      total_debts: 0,
     });
   });
 
   it("Unknown filter id", async () => {
-    await prisma.transaction.create({
+    await createTransaction({
       data: {
         amount: 10,
         type: "expense" as const,
@@ -1387,7 +1819,7 @@ describe("query transactions", () => {
         paymentMethodId: 1,
       },
     });
-    const response = await request(app)
+    const response = await authenticatedRequest
       .get("/api/v1/transaction")
       .query({ category_id: 999999 });
     expect(response.status).toBe(200);
@@ -1395,18 +1827,19 @@ describe("query transactions", () => {
     expect(response.body.summary).toEqual({
       total_income: 0,
       total_expense: 0,
+      total_debts: 0,
     });
   });
 
   it("Highest amount", async () => {
-    await prisma.transaction.createMany({
+    await createTransactions({
       data: [
         transactionAt("2023-01-01T00:00:00.000Z", 10),
         transactionAt("2023-01-02T00:00:00.000Z", 50),
         transactionAt("2023-01-03T00:00:00.000Z", 30),
       ],
     });
-    const response = await request(app).get("/api/v1/transaction").query({
+    const response = await authenticatedRequest.get("/api/v1/transaction").query({
       group_by: "none",
       order_by: "amount_desc",
       limit: 1,
@@ -1417,7 +1850,7 @@ describe("query transactions", () => {
 
   it("Oldest first", async () => {
     const sameDate = new Date("2023-05-01T00:00:00.000Z");
-    await prisma.transaction.createMany({
+    await createTransactions({
       data: [
         transactionAt("2023-05-02T00:00:00.000Z", 2),
         {
@@ -1438,7 +1871,7 @@ describe("query transactions", () => {
         },
       ],
     });
-    const response = await request(app)
+    const response = await authenticatedRequest
       .get("/api/v1/transaction")
       .query({ order_by: "date_asc" });
     const dates = response.body.data.map((row: { date: string }) => row.date);
@@ -1448,7 +1881,7 @@ describe("query transactions", () => {
   });
 
   it("Page size", async () => {
-    await prisma.transaction.createMany({
+    await createTransactions({
       data: Array.from({ length: 20 }, (_, index) =>
         transactionAt(
           `2023-01-01T00:00:${String(index).padStart(2, "0")}.000Z`,
@@ -1456,7 +1889,7 @@ describe("query transactions", () => {
         ),
       ),
     });
-    const response = await request(app)
+    const response = await authenticatedRequest
       .get("/api/v1/transaction")
       .query({ page: 2, limit: 10 });
     expect(response.body.meta.current_page).toBe(2);
@@ -1465,11 +1898,11 @@ describe("query transactions", () => {
   });
 
   it("Ranking by category", async () => {
-    const comida = await prisma.category.create({ data: { name: "Comida" } });
-    const transporte = await prisma.category.create({
+    const comida = await createCategory({ data: { name: "Comida" } });
+    const transporte = await createCategory({
       data: { name: "Transporte" },
     });
-    await prisma.transaction.createMany({
+    await createTransactions({
       data: [
         ...Array.from({ length: 12 }, () => ({
           amount: 12_500,
@@ -1488,7 +1921,7 @@ describe("query transactions", () => {
       ],
     });
 
-    const response = await request(app)
+    const response = await authenticatedRequest
       .get("/api/v1/transaction")
       .query({ group_by: "category" });
     expect(response.body.meta.group_by).toBe("category");
@@ -1510,13 +1943,13 @@ describe("query transactions", () => {
   });
 
   it("Ranking by payment method", async () => {
-    const small = await prisma.paymentMethod.create({
+    const small = await createPaymentMethod({
       data: { name: "Caja", type: "cash" },
     });
-    const large = await prisma.paymentMethod.create({
+    const large = await createPaymentMethod({
       data: { name: "Visa", type: "credit" },
     });
-    await prisma.transaction.createMany({
+    await createTransactions({
       data: [
         {
           amount: 10,
@@ -1535,7 +1968,7 @@ describe("query transactions", () => {
       ],
     });
 
-    const response = await request(app)
+    const response = await authenticatedRequest
       .get("/api/v1/transaction")
       .query({ group_by: "payment_method", order_by: "amount_asc" });
 
@@ -1549,11 +1982,11 @@ describe("query transactions", () => {
   });
 
   it("Pagination is ignored", async () => {
-    const comida = await prisma.category.create({ data: { name: "Comida" } });
-    const transporte = await prisma.category.create({
+    const comida = await createCategory({ data: { name: "Comida" } });
+    const transporte = await createCategory({
       data: { name: "Transporte" },
     });
-    await prisma.transaction.createMany({
+    await createTransactions({
       data: [
         {
           amount: 10,
@@ -1572,14 +2005,14 @@ describe("query transactions", () => {
       ],
     });
 
-    const response = await request(app)
+    const response = await authenticatedRequest
       .get("/api/v1/transaction")
       .query({ group_by: "category", page: 2, limit: 1 });
     expect(response.body.data).toHaveLength(2);
   });
 
   it("Totals by day", async () => {
-    await prisma.transaction.createMany({
+    await createTransactions({
       data: [
         { ...transactionAt("2023-10-27T23:30:00.000Z", 25000), type: "expense" },
         {
@@ -1590,7 +2023,7 @@ describe("query transactions", () => {
       ],
     });
 
-    const response = await request(app)
+    const response = await authenticatedRequest
       .get("/api/v1/transaction")
       .query({ group_by: "day" });
     expect(response.body.data).toEqual([
@@ -1610,7 +2043,7 @@ describe("query transactions", () => {
   });
 
   it("Month and year buckets", async () => {
-    await prisma.transaction.createMany({
+    await createTransactions({
       data: [
         transactionAt("2023-10-31T23:00:00.000Z", 10),
         {
@@ -1627,10 +2060,10 @@ describe("query transactions", () => {
       ],
     });
 
-    const months = await request(app)
+    const months = await authenticatedRequest
       .get("/api/v1/transaction")
       .query({ group_by: "month" });
-    const years = await request(app)
+    const years = await authenticatedRequest
       .get("/api/v1/transaction")
       .query({ group_by: "year" });
 
@@ -1658,10 +2091,10 @@ describe("query transactions", () => {
   });
 
   it("Invalid group and order", async () => {
-    const grouped = await request(app)
+    const grouped = await authenticatedRequest
       .get("/api/v1/transaction")
       .query({ group_by: "week" });
-    const ordered = await request(app)
+    const ordered = await authenticatedRequest
       .get("/api/v1/transaction")
       .query({ order_by: "name" });
     expect(grouped.status).toBe(400);
@@ -1671,7 +2104,7 @@ describe("query transactions", () => {
   });
 
   it("Inverted dates", async () => {
-    const response = await request(app).get("/api/v1/transaction").query({
+    const response = await authenticatedRequest.get("/api/v1/transaction").query({
       start_date: "2023-10-31T00:00:00.000Z",
       end_date: "2023-10-01T00:00:00.000Z",
     });
@@ -1679,14 +2112,14 @@ describe("query transactions", () => {
   });
 
   it("Limit above the maximum", async () => {
-    const response = await request(app)
+    const response = await authenticatedRequest
       .get("/api/v1/transaction")
       .query({ limit: 101 });
     expect(response.status).toBe(400);
   });
 
   it("Limit at the maximum", async () => {
-    const response = await request(app)
+    const response = await authenticatedRequest
       .get("/api/v1/transaction")
       .query({ group_by: "none", limit: 100 });
     expect(response.status).toBe(200);
@@ -1715,7 +2148,7 @@ describe("create a credit card payment", () => {
       description: "Pago a tarjeta Visa Oro",
       date: "2023-10-27T12:30:00.000Z",
       target_payment_method: { id: card.id, name: "Visa Oro" },
-      category: { id: 3, name: "Transferencias" },
+      category: { id: 3, name: "transferencias" },
       payment_method: { id: source.id, name: "Ahorros" },
     });
     const storedSource = await prisma.paymentMethod.findUniqueOrThrow({
@@ -1726,6 +2159,22 @@ describe("create a credit card payment", () => {
     });
     expect(storedSource.currentBalance).toBe(50_000);
     expect(storedCard.currentDebt).toBe(30_000);
+  });
+
+  it("stores a category supplied on a card payment", async () => {
+    const category = await createCategory({ data: { name: "Pago extra" } });
+    const source = await savingsAccount(10_000);
+    const card = await creditCard(10_000, "Visa");
+
+    const response = await createCardPayment({
+      amount: 1000,
+      payment_method_id: source.id,
+      target_payment_method_id: card.id,
+      category_id: category.id,
+    });
+
+    expect(response.status).toBe(201);
+    expect(response.body.category).toEqual({ id: category.id, name: "Pago extra" });
   });
 
   it("pays a card from the seeded cash wallet", async () => {
@@ -1870,7 +2319,7 @@ describe("create a credit card payment", () => {
 
   it("rejects a savings or cash target", async () => {
     const source = await savingsAccount(10_000);
-    const cashTarget = await prisma.paymentMethod.create({
+    const cashTarget = await createPaymentMethod({
       data: { name: "Caja", type: "cash", currentBalance: 10_000 },
     });
     const beforeCash = await ledgerSnapshot();
@@ -1999,7 +2448,7 @@ describe("correct or delete a card payment", () => {
       target_payment_method_id: card.id,
     });
 
-    const response = await request(app).delete(
+    const response = await authenticatedRequest.delete(
       `/api/v1/transaction/${created.body.id}`,
     );
 
@@ -2029,7 +2478,7 @@ describe("correct or delete a card payment", () => {
     const balanceBeforePatch = 50_000;
     const debtBeforePatch = 30_000;
 
-    const response = await request(app)
+    const response = await authenticatedRequest
       .patch(`/api/v1/transaction/${created.body.id}`)
       .send({ amount: 30_000 });
 
@@ -2060,7 +2509,7 @@ describe("correct or delete a card payment", () => {
     });
     const before = await ledgerSnapshot();
 
-    const response = await request(app)
+    const response = await authenticatedRequest
       .patch(`/api/v1/transaction/${created.body.id}`)
       .send({ amount: 30_000 });
 
@@ -2080,7 +2529,7 @@ describe("correct or delete a card payment", () => {
     const created = await postTransaction({ amount: 25000, type: "expense" });
     const before = await ledgerSnapshot();
 
-    const response = await request(app)
+    const response = await authenticatedRequest
       .patch(`/api/v1/transaction/${created.body.id}`)
       .send({ type: "credit_card_payment" });
 
@@ -2104,10 +2553,10 @@ describe("correct or delete a card payment", () => {
     });
     const before = await ledgerSnapshot();
 
-    const methodResponse = await request(app)
+    const methodResponse = await authenticatedRequest
       .patch(`/api/v1/transaction/${created.body.id}`)
       .send({ payment_method_id: other.id });
-    const typeResponse = await request(app)
+    const typeResponse = await authenticatedRequest
       .patch(`/api/v1/transaction/${created.body.id}`)
       .send({ type: "expense" });
 
@@ -2136,7 +2585,7 @@ describe("card payments in queries", () => {
       date: "2023-10-27T12:30:00Z",
     });
 
-    const response = await request(app).get("/api/v1/transaction");
+    const response = await authenticatedRequest.get("/api/v1/transaction");
     expect(response.body.data).toEqual([
       {
         id: created.body.id,
@@ -2146,7 +2595,7 @@ describe("card payments in queries", () => {
         type: "credit_card_payment",
         currency: "COP",
         target_payment_method: { id: card.id, name: "Visa" },
-        category: { id: 3, name: "Transferencias" },
+        category: { id: 3, name: "transferencias" },
         payment_method: { id: source.id, name: "Ahorros" },
       },
     ]);
@@ -2163,10 +2612,10 @@ describe("card payments in queries", () => {
       target_payment_method_id: card.id,
     });
 
-    const response = await request(app)
+    const response = await authenticatedRequest
       .get("/api/v1/transaction")
       .query({ type: "credit_card_payment" });
-    const rejected = await request(app)
+    const rejected = await authenticatedRequest
       .get("/api/v1/transaction")
       .query({ type: "transferencia" });
 
@@ -2188,10 +2637,11 @@ describe("card payments in queries", () => {
       target_payment_method_id: card.id,
     });
 
-    const response = await request(app).get("/api/v1/transaction");
+    const response = await authenticatedRequest.get("/api/v1/transaction");
     expect(response.body.summary).toEqual({
       total_income: 0,
       total_expense: 25_000,
+      total_debts: 30_000,
     });
     expect(response.body.meta.total_records).toBe(2);
   });
@@ -2206,7 +2656,7 @@ describe("card payments in queries", () => {
       date: "2023-10-27T12:30:00Z",
     });
 
-    const response = await request(app)
+    const response = await authenticatedRequest
       .get("/api/v1/transaction")
       .query({ group_by: "month" });
     expect(response.body.data).toEqual([
@@ -2228,13 +2678,13 @@ describe("card payments in queries", () => {
       target_payment_method_id: card.id,
     });
 
-    const response = await request(app)
+    const response = await authenticatedRequest
       .get("/api/v1/transaction")
       .query({ group_by: "category" });
     expect(response.body.data).toEqual([
       {
         category_id: 3,
-        category_name: "Transferencias",
+        category_name: "transferencias",
         total_amount: 50_000,
         count: 1,
       },
@@ -2250,7 +2700,7 @@ describe("card payments in queries", () => {
       target_payment_method_id: card.id,
     });
 
-    const response = await request(app)
+    const response = await authenticatedRequest
       .get("/api/v1/transaction")
       .query({ group_by: "payment_method" });
     expect(response.body.data).toEqual([
@@ -2265,10 +2715,10 @@ describe("card payments in queries", () => {
 
   it("returns COP for a row inserted without a currency column", async () => {
     await prisma.$executeRaw`
-      INSERT INTO transactions (description, amount, type, payment_method_id, category_id)
-      VALUES ('vieja', 10, 'expense', 1, 1)
+      INSERT INTO transactions (description, amount, type, payment_method_id, category_id, user_id)
+      VALUES ('vieja', 10, 'expense', 1, 1, ${LEGACY_USER_ID})
     `;
-    const response = await request(app).get("/api/v1/transaction");
+    const response = await authenticatedRequest.get("/api/v1/transaction");
     expect(response.body.data[0].currency).toBe("COP");
     expect(response.body.data[0].target_payment_method).toBeNull();
   });
@@ -2297,6 +2747,7 @@ describe("server process", () => {
         try {
           const response = await fetch(
             `http://127.0.0.1:${environment.port}/api/v1/transaction`,
+            { headers: legacyIdentity },
           );
           status = response.status;
           if (status === 200) break;
@@ -2314,6 +2765,7 @@ describe("server process", () => {
 
 function transactionAt(date: string, amount: number): Prisma.TransactionCreateManyInput {
   return {
+    userId: LEGACY_USER_ID,
     amount,
     type: "expense" as const,
     description: "expense",

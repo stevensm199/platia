@@ -7,6 +7,7 @@ import {
   MAX_AMOUNT,
   MAX_LIMIT,
 } from "../../../config/constants";
+import { USER_CURRENCIES } from "../domain/user";
 import { CreateTransaction } from "../application/create-transaction";
 import { DeleteTransaction } from "../application/delete-transaction";
 import { ListTransactions } from "../application/list-transactions";
@@ -28,17 +29,14 @@ const descriptionField = z
   })
   .optional();
 
-const createTypeField = z.enum(
-  ["expense", "income", "credit_card_payment"],
-  {
-    errorMap: (issue, context) => ({
-      message:
-        issue.code === "invalid_enum_value"
-          ? "type must be expense, income or credit_card_payment"
-          : context.defaultError,
-    }),
-  },
-);
+const createTypeField = z.enum(["expense", "income", "credit_card_payment"], {
+  errorMap: (issue, context) => ({
+    message:
+      issue.code === "invalid_enum_value"
+        ? "type must be expense, income or credit_card_payment"
+        : context.defaultError,
+  }),
+});
 
 const movementTypeField = z.enum(["expense", "income"], {
   errorMap: (issue, context) => ({
@@ -59,7 +57,21 @@ const transactionFields = {
   date: z.string().datetime({ offset: true }).optional(),
 };
 
-const currencyField = z.literal("COP").optional();
+const currencyField = z.enum(USER_CURRENCIES).optional();
+
+const descriptionQuery = z
+  .string()
+  .optional()
+  .transform((value) => {
+    const trimmed = value?.trim() ?? "";
+    return trimmed.length === 0 ? undefined : trimmed;
+  })
+  .refine(
+    (value) => value === undefined || value.length <= DESCRIPTION_MAX_LENGTH,
+    {
+      message: `description must be at most ${DESCRIPTION_MAX_LENGTH} characters`,
+    },
+  );
 
 const createBodySchema = z.object({
   amount: transactionFields.amount,
@@ -95,15 +107,23 @@ const querySchema = z
     type: z.enum(["expense", "income", "credit_card_payment"]).optional(),
     category_id: optionalQueryId,
     payment_method_id: optionalQueryId,
-    group_by: z.enum(["none", "category", "payment_method", "day", "month", "year"]).default("none"),
-    order_by: z.enum(["date_desc", "date_asc", "amount_desc", "amount_asc"]).default("date_desc"),
+    description: descriptionQuery,
+    group_by: z
+      .enum(["none", "category", "payment_method", "day", "month", "year"])
+      .default("none"),
+    order_by: z
+      .enum(["date_desc", "date_asc", "amount_desc", "amount_asc"])
+      .default("date_desc"),
     page: z.coerce.number().int().min(1).default(DEFAULT_PAGE),
     limit: z.coerce.number().int().min(1).max(MAX_LIMIT).default(DEFAULT_LIMIT),
   })
   .refine(
     (query) => {
       if (!query.start_date || !query.end_date) return true;
-      return new Date(query.start_date).getTime() <= new Date(query.end_date).getTime();
+      return (
+        new Date(query.start_date).getTime() <=
+        new Date(query.end_date).getTime()
+      );
     },
     { message: "start_date must be earlier than or equal to end_date" },
   );
@@ -118,7 +138,7 @@ export class TransactionController {
 
   create = async (request: Request, response: Response) => {
     const body = createBodySchema.parse(request.body);
-    const transaction = await this.createTransaction.execute({
+    const transaction = await this.createTransaction.execute(request.userId, {
       amount: body.amount,
       type: body.type,
       description: body.description,
@@ -126,6 +146,7 @@ export class TransactionController {
       paymentMethodId: body.payment_method_id,
       targetPaymentMethodId: body.target_payment_method_id,
       date: body.date ? new Date(body.date) : undefined,
+      currency: body.currency,
     });
     response.status(201).json(toTransactionJson(transaction));
   };
@@ -133,11 +154,15 @@ export class TransactionController {
   list = async (request: Request, response: Response) => {
     const query = querySchema.parse(request.query);
     const filters: TransactionFilters = {
+      userId: request.userId,
       startDate: query.start_date ? new Date(query.start_date) : undefined,
       endDate: query.end_date ? new Date(query.end_date) : undefined,
       type: query.type,
       categoryId: query.category_id ? Number(query.category_id) : undefined,
-      paymentMethodId: query.payment_method_id ? Number(query.payment_method_id) : undefined,
+      paymentMethodId: query.payment_method_id
+        ? Number(query.payment_method_id)
+        : undefined,
+      description: query.description,
       groupBy: query.group_by,
       orderBy: query.order_by,
       page: query.page,
@@ -161,6 +186,7 @@ export class TransactionController {
       summary: {
         total_income: result.totalIncome,
         total_expense: result.totalExpense,
+        total_debts: result.totalDebts,
       },
       data: result.rows.map(toTransactionJson),
     });
@@ -169,20 +195,24 @@ export class TransactionController {
   update = async (request: Request, response: Response) => {
     const id = idSchema.parse(request.params.id);
     const body = updateBodySchema.parse(request.body ?? {});
-    const transaction = await this.updateTransaction.execute(id, {
-      amount: body.amount,
-      type: body.type,
-      description: body.description,
-      categoryId: body.category_id,
-      paymentMethodId: body.payment_method_id,
-      date: body.date ? new Date(body.date) : undefined,
-    });
+    const transaction = await this.updateTransaction.execute(
+      request.userId,
+      id,
+      {
+        amount: body.amount,
+        type: body.type,
+        description: body.description,
+        categoryId: body.category_id,
+        paymentMethodId: body.payment_method_id,
+        date: body.date ? new Date(body.date) : undefined,
+      },
+    );
     response.status(200).json(toTransactionJson(transaction));
   };
 
   remove = async (request: Request, response: Response) => {
     const id = idSchema.parse(request.params.id);
-    await this.deleteTransaction.execute(id);
+    await this.deleteTransaction.execute(request.userId, id);
     response.status(204).send();
   };
 }

@@ -5,9 +5,9 @@ import type { UnitOfWork } from "../domain/unit-of-work";
 export class GetPaymentMethod {
   constructor(private readonly unitOfWork: UnitOfWork) {}
 
-  execute(id: number): Promise<PaymentMethodRecord> {
+  execute(userId: number, id: number): Promise<PaymentMethodRecord> {
     return this.unitOfWork.run(async ({ paymentMethods }) => {
-      const paymentMethod = await paymentMethods.findById(id);
+      const paymentMethod = await paymentMethods.findById(userId, id);
       if (!paymentMethod) {
         throw new NotFoundError(`Payment method ${id} does not exist`);
       }

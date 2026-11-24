@@ -1,10 +1,4 @@
 import {
-  DEFAULT_CATEGORY_ID,
-  DEFAULT_CURRENCY,
-  DEFAULT_PAYMENT_METHOD_ID,
-  DEFAULT_TRANSFER_CATEGORY_ID,
-} from "../../../config/constants";
-import {
   assertBalanceAccount,
   assertCardPaymentSource,
   assertCreditCard,
@@ -15,8 +9,14 @@ import {
   moveCounters,
 } from "../domain/ledger-rules";
 import type { TransactionType } from "../domain/financial-impact";
-import { toTransactionView, type TransactionView } from "../domain/transaction";
+import {
+  categoryIdForNewTransaction,
+  toTransactionView,
+  type TransactionView,
+} from "../domain/transaction";
 import type { UnitOfWork } from "../domain/unit-of-work";
+import { NotFoundError, ValidationError } from "../../../shared/errors/app-error";
+import type { UserCurrency } from "../domain/user";
 import { requireCategory } from "./require-category";
 import { withLockedPaymentMethods } from "./with-locked-payment-methods";
 
@@ -28,12 +28,13 @@ export type CreateTransactionRequest = {
   paymentMethodId?: number;
   targetPaymentMethodId?: number;
   date?: Date;
+  currency?: UserCurrency;
 };
 
 export class CreateTransaction {
   constructor(private readonly unitOfWork: UnitOfWork) {}
 
-  execute(input: CreateTransactionRequest): Promise<TransactionView> {
+  execute(userId: number, input: CreateTransactionRequest): Promise<TransactionView> {
     assertTransactionTarget(input.type, input.targetPaymentMethodId);
     if (input.type === "credit_card_payment") {
       assertCardPaymentSource(input.paymentMethodId);
@@ -43,20 +44,23 @@ export class CreateTransaction {
       );
     }
 
-    const categoryId =
-      input.type === "credit_card_payment"
-        ? DEFAULT_TRANSFER_CATEGORY_ID
-        : input.categoryId ?? DEFAULT_CATEGORY_ID;
-    const paymentMethodId = input.paymentMethodId ?? DEFAULT_PAYMENT_METHOD_ID;
     const targetPaymentMethodId = input.targetPaymentMethodId;
 
-    return this.unitOfWork.run(async ({ categories, transactions, paymentMethods }) => {
-      const category = await requireCategory(categories, categoryId);
+    return this.unitOfWork.run(async ({ categories, transactions, paymentMethods, users }) => {
+      const user = await users.findById(userId);
+      if (!user) throw new NotFoundError(`User ${userId} does not exist`);
+      if (input.currency !== undefined && input.currency !== user.currency) {
+        throw new ValidationError("currency must match the user currency");
+      }
+      const categoryId = categoryIdForNewTransaction(input.type, input.categoryId, user);
+      const paymentMethodId = input.paymentMethodId ?? user.defaultPaymentMethodId;
+      const category = await requireCategory(categories, userId, categoryId);
       const ids = targetPaymentMethodId === undefined
         ? [paymentMethodId]
         : [paymentMethodId, targetPaymentMethodId];
       const { locked, result: created } = await withLockedPaymentMethods(
         paymentMethods,
+        userId,
         ids,
         async (methods) => {
           const source = methods.get(paymentMethodId)!;
@@ -75,10 +79,11 @@ export class CreateTransaction {
           }
 
           const created = await transactions.insert({
+            userId,
             amount: input.amount,
             description,
             type: input.type,
-            currency: DEFAULT_CURRENCY,
+            currency: user.currency,
             categoryId,
             paymentMethodId,
             targetPaymentMethodId: target?.id ?? null,

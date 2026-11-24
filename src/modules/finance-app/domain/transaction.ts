@@ -1,4 +1,5 @@
 import type { MovementType, TransactionType } from "./financial-impact";
+import type { UserCurrency } from "./user";
 
 export type TransactionView = {
   id: number;
@@ -6,7 +7,7 @@ export type TransactionView = {
   description: string;
   amount: number;
   type: TransactionType;
-  currency: "COP";
+  currency: UserCurrency;
   targetPaymentMethod: { id: number; name: string } | null;
   category: { id: number; name: string };
   paymentMethod: { id: number; name: string };
@@ -33,10 +34,11 @@ export type LockedTransaction = {
 };
 
 export type StoredTransaction = {
+  userId: number;
   amount: number;
   description: string;
   type: TransactionType;
-  currency: "COP";
+  currency: UserCurrency;
   categoryId: number;
   paymentMethodId: number;
   targetPaymentMethodId: number | null;
@@ -58,8 +60,29 @@ export type StoredTransactionRow = {
   description: string;
   amount: number;
   type: TransactionType;
-  currency: "COP";
+  currency: UserCurrency;
 };
+
+export function categoryIdForNewTransaction(
+  type: TransactionType,
+  requestedCategoryId: number | undefined,
+  catalog: {
+    defaultCategoryId: number;
+    incomeCategoryId: number;
+    transferCategoryId: number;
+  },
+): number {
+  if (requestedCategoryId !== undefined) {
+    return requestedCategoryId;
+  }
+  if (type === "income") {
+    return catalog.incomeCategoryId;
+  }
+  if (type === "credit_card_payment") {
+    return catalog.transferCategoryId;
+  }
+  return catalog.defaultCategoryId;
+}
 
 export function toTransactionView(
   row: StoredTransactionRow,
@@ -83,9 +106,10 @@ export function toTransactionView(
 }
 
 export interface TransactionRepository {
-  lockById(id: number): Promise<LockedTransaction>;
+  lockById(userId: number, id: number): Promise<LockedTransaction>;
   insert(input: StoredTransaction): Promise<StoredTransactionRow>;
-  update(id: number, changes: StoredTransactionChanges): Promise<StoredTransactionRow>;
-  delete(id: number): Promise<void>;
+  update(userId: number, id: number, changes: StoredTransactionChanges): Promise<StoredTransactionRow>;
+  delete(userId: number, id: number): Promise<void>;
+  deleteMany(userId: number): Promise<void>;
 }
 

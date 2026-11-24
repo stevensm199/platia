@@ -4,7 +4,7 @@ import type { UnitOfWork } from "../domain/unit-of-work";
 export class ListPaymentMethods {
   constructor(private readonly unitOfWork: UnitOfWork) {}
 
-  execute(): Promise<PaymentMethodRecord[]> {
-    return this.unitOfWork.run(({ paymentMethods }) => paymentMethods.findMany());
+  execute(userId: number): Promise<PaymentMethodRecord[]> {
+    return this.unitOfWork.run(({ paymentMethods }) => paymentMethods.findMany(userId));
   }
 }

@@ -2,6 +2,7 @@ import {
   toTransactionView,
   type TransactionView,
 } from "../domain/transaction";
+import type { PaymentMethodRepository } from "../domain/payment-method";
 import type {
   CategoryGroup,
   GroupBy,
@@ -18,6 +19,7 @@ export type TransactionListResult = {
   limit: number;
   totalIncome: number;
   totalExpense: number;
+  totalDebts: number;
   rows: TransactionView[];
 };
 
@@ -29,7 +31,10 @@ export type TransactionGroupResult = {
 export type ListTransactionsResult = TransactionListResult | TransactionGroupResult;
 
 export class ListTransactions {
-  constructor(private readonly transactionQuery: TransactionQuery) {}
+  constructor(
+    private readonly transactionQuery: TransactionQuery,
+    private readonly paymentMethods: PaymentMethodRepository,
+  ) {}
 
   async execute(filters: TransactionFilters): Promise<ListTransactionsResult> {
     if (filters.groupBy === "category") {
@@ -55,10 +60,11 @@ export class ListTransactions {
       };
     }
 
-    const [totalRecords, totals, rows] = await Promise.all([
+    const [totalRecords, totals, rows, totalDebts] = await Promise.all([
       this.transactionQuery.count(filters),
       this.transactionQuery.sumByType(filters),
       this.transactionQuery.findMany(filters),
+      this.paymentMethods.sumCreditDebt(filters.userId),
     ]);
 
     let totalIncome = 0;
@@ -71,12 +77,19 @@ export class ListTransactions {
     return {
       totalRecords,
       page: filters.page,
-      totalPages: totalRecords === 0 ? 0 : Math.ceil(totalRecords / filters.limit),
+      totalPages:
+        totalRecords === 0 ? 0 : Math.ceil(totalRecords / filters.limit),
       limit: filters.limit,
       totalIncome,
       totalExpense,
+      totalDebts,
       rows: rows.map((row) =>
-        toTransactionView(row, row.category, row.paymentMethod, row.targetPaymentMethod),
+        toTransactionView(
+          row,
+          row.category,
+          row.paymentMethod,
+          row.targetPaymentMethod,
+        ),
       ),
     };
   }

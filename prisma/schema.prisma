@@ -22,14 +22,37 @@ enum TransactionType {
 
 enum Currency {
   COP
+  USD
+  EUR
+}
+
+model User {
+  id                     Int             @id @default(autoincrement())
+  channel                String
+  externalId             String          @map("external_id")
+  email                  String          @unique
+  currency               Currency        @default(COP)
+  defaultCategoryId      Int             @map("default_category_id")
+  incomeCategoryId       Int             @map("income_category_id")
+  transferCategoryId     Int             @map("transfer_category_id")
+  defaultPaymentMethodId Int             @map("default_payment_method_id")
+  categories             Category[]      @relation("CategoryOwner")
+  paymentMethods         PaymentMethod[] @relation("PaymentMethodOwner")
+  transactions           Transaction[]
+
+  @@unique([channel, externalId])
+  @@map("users")
 }
 
 model Category {
-  id           Int           @id @default(autoincrement())
-  name         String
-  description  String?
-  transactions Transaction[]
+  id               Int           @id @default(autoincrement())
+  name             String
+  description      String?
+  userId           Int           @map("user_id")
+  user             User          @relation("CategoryOwner", fields: [userId], references: [id], onDelete: Restrict)
+  transactions     Transaction[]
 
+  @@index([userId])
   @@map("categories")
 }
 
@@ -40,9 +63,12 @@ model PaymentMethod {
   currentBalance       Int               @default(0) @map("current_balance")
   currentLimit         Int               @default(0) @map("current_limit")
   currentDebt          Int               @default(0) @map("current_debt")
+  userId               Int               @map("user_id")
+  user                 User              @relation("PaymentMethodOwner", fields: [userId], references: [id], onDelete: Restrict)
   transactions         Transaction[]     @relation("TransactionSource")
   targetedTransactions Transaction[]     @relation("TransactionTarget")
 
+  @@index([userId])
   @@map("payment_methods")
 }
 
@@ -53,6 +79,8 @@ model Transaction {
   amount                Int
   type                  TransactionType
   currency              Currency        @default(COP)
+  user                  User            @relation(fields: [userId], references: [id], onDelete: Restrict)
+  userId                Int             @map("user_id")
   paymentMethod         PaymentMethod   @relation("TransactionSource", fields: [paymentMethodId], references: [id])
   paymentMethodId       Int             @default(1) @map("payment_method_id")
   targetPaymentMethod   PaymentMethod?  @relation("TransactionTarget", fields: [targetPaymentMethodId], references: [id], onDelete: Restrict)
@@ -60,5 +88,6 @@ model Transaction {
   category              Category        @relation(fields: [categoryId], references: [id])
   categoryId            Int             @default(1) @map("category_id")
 
+  @@index([userId])
   @@map("transactions")
 }

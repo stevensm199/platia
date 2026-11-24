@@ -5,31 +5,32 @@ import { throwCatalogWriteError } from "./prisma-catalog-error";
 export class PrismaCategoryRepository implements CategoryRepository {
   constructor(private readonly tx: Prisma.TransactionClient) {}
 
-  findMany(): Promise<CategoryRecord[]> {
+  findMany(userId: number): Promise<CategoryRecord[]> {
     return this.tx.category.findMany({
+      where: { userId },
       orderBy: { id: "asc" },
       select: { id: true, name: true },
     });
   }
 
-  findById(id: number): Promise<CategoryRecord | null> {
-    return this.tx.category.findUnique({
-      where: { id },
+  findById(userId: number, id: number): Promise<CategoryRecord | null> {
+    return this.tx.category.findFirst({
+      where: { id, userId },
       select: { id: true, name: true },
     });
   }
 
-  insert(name: string): Promise<CategoryRecord> {
+  insert(userId: number, name: string): Promise<CategoryRecord> {
     return this.tx.category.create({
-      data: { name },
+      data: { userId, name },
       select: { id: true, name: true },
     });
   }
 
-  async update(id: number, name: string): Promise<CategoryRecord> {
+  async update(userId: number, id: number, name: string): Promise<CategoryRecord> {
     try {
       return await this.tx.category.update({
-        where: { id },
+        where: { id, userId },
         data: { name },
         select: { id: true, name: true },
       });
@@ -38,11 +39,15 @@ export class PrismaCategoryRepository implements CategoryRepository {
     }
   }
 
-  async delete(id: number): Promise<void> {
+  async delete(userId: number, id: number): Promise<void> {
     try {
-      await this.tx.category.delete({ where: { id } });
+      await this.tx.category.delete({ where: { id, userId } });
     } catch (error) {
       throwCatalogWriteError(error, "Category", id);
     }
+  }
+
+  async deleteMany(userId: number): Promise<void> {
+    await this.tx.category.deleteMany({ where: { userId } });
   }
 }

@@ -5,9 +5,9 @@ import type { UnitOfWork } from "../domain/unit-of-work";
 export class GetCategory {
   constructor(private readonly unitOfWork: UnitOfWork) {}
 
-  execute(id: number): Promise<CategoryRecord> {
+  execute(userId: number, id: number): Promise<CategoryRecord> {
     return this.unitOfWork.run(async ({ categories }) => {
-      const category = await categories.findById(id);
+      const category = await categories.findById(userId, id);
       if (!category) throw new NotFoundError(`Category ${id} does not exist`);
       return category;
     });

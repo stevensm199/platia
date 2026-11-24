@@ -5,6 +5,8 @@ const environmentSchema = z.object({
   DIRECT_URL: z.string().min(1),
   PORT: z.coerce.number().int().positive(),
   NODE_ENV: z.string().min(1),
+  TELEGRAM_BOT_TOKEN: z.string().optional(),
+  TELEGRAM_WEBHOOK_SECRET: z.string().optional(),
 });
 
 export type AppEnvironment = {
@@ -12,7 +14,14 @@ export type AppEnvironment = {
   directUrl: string;
   port: number;
   nodeEnv: string;
+  telegramBotToken?: string;
+  telegramWebhookSecret?: string;
 };
+
+function optionalValue(value: string | undefined): string | undefined {
+  if (value === undefined || value.trim() === "") return undefined;
+  return value;
+}
 
 export function loadEnv(
   source: Record<string, string | undefined> = process.env,
@@ -23,5 +32,7 @@ export function loadEnv(
     directUrl: parsed.DIRECT_URL,
     port: parsed.PORT,
     nodeEnv: parsed.NODE_ENV,
+    telegramBotToken: optionalValue(parsed.TELEGRAM_BOT_TOKEN),
+    telegramWebhookSecret: optionalValue(parsed.TELEGRAM_WEBHOOK_SECRET),
   };
 }

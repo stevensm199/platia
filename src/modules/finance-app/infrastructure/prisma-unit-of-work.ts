@@ -3,6 +3,7 @@ import type { Repositories, UnitOfWork } from "../domain/unit-of-work";
 import { PrismaPaymentMethodRepository } from "./prisma-payment-method-repository";
 import { PrismaCategoryRepository } from "./prisma-category-repository";
 import { PrismaTransactionRepository } from "./prisma-transaction-repository";
+import { PrismaUserRepository } from "./prisma-user-repository";
 
 export class PrismaUnitOfWork implements UnitOfWork {
   constructor(private readonly prisma: PrismaClient) {}
@@ -13,6 +14,7 @@ export class PrismaUnitOfWork implements UnitOfWork {
         categories: new PrismaCategoryRepository(tx),
         transactions: new PrismaTransactionRepository(tx),
         paymentMethods: new PrismaPaymentMethodRepository(tx),
+        users: new PrismaUserRepository(tx),
       }),
     );
   }

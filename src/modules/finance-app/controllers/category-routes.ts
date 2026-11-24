@@ -6,6 +6,8 @@ import { UpdateCategory } from "../application/update-category";
 import { DeleteCategory } from "../application/delete-category";
 import { CategoryController } from "./category-controller";
 import { asyncRoute } from "./async-route";
+import { ResolveUser } from "../application/resolve-user";
+import { requireUser } from "./user-context";
 
 export function createCategoryRouter(dependencies: {
   createCategory: CreateCategory;
@@ -13,6 +15,7 @@ export function createCategoryRouter(dependencies: {
   getCategory: GetCategory;
   updateCategory: UpdateCategory;
   deleteCategory: DeleteCategory;
+  resolveUser: ResolveUser;
 }) {
   const controller = new CategoryController(
     dependencies.createCategory,
@@ -22,6 +25,7 @@ export function createCategoryRouter(dependencies: {
     dependencies.deleteCategory,
   );
   const router = Router();
+  router.use("/category", requireUser(dependencies.resolveUser));
 
   router.get("/category", asyncRoute(controller.list));
   router.get("/category/:id", asyncRoute(controller.get));

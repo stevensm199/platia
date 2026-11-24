@@ -2,21 +2,15 @@ import { ConflictError } from "../../../shared/errors/app-error";
 
 export function assertCategoryIsNotDefault(
   id: number,
-  defaultCategoryId: number,
-  incomeCategoryId: number,
-  transferCategoryId: number,
+  ...protectedCategoryIds: number[]
 ) {
-  if (
-    id === defaultCategoryId ||
-    id === incomeCategoryId ||
-    id === transferCategoryId
-  ) {
+  if (protectedCategoryIds.includes(id)) {
     throw new ConflictError(`Category ${id} is a default category and cannot be deleted`);
   }
 }
 
-export function assertPaymentMethodIsNotDefault(id: number, defaultPaymentMethodId: number) {
-  if (id === defaultPaymentMethodId) {
+export function assertPaymentMethodIsNotDefault(id: number, ...protectedPaymentMethodIds: number[]) {
+  if (protectedPaymentMethodIds.includes(id)) {
     throw new ConflictError(`Payment method ${id} is a default and cannot be deleted`);
   }
 }
